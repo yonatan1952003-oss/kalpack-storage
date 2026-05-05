@@ -745,6 +745,19 @@ function ImportExcelModal({ catalog, existingSuppliers, onClose, onImport }: {
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
 
+  const downloadTemplate = () => {
+    const sample = [
+      { SKU: 'LED-5050-WW',   Quantity: 5000, CBM: 0.02,  'Unit Price': 2.40 },
+      { SKU: 'LED-2835-CW',   Quantity: 3000, CBM: 0.015, 'Unit Price': 1.80 },
+      { SKU: 'NEW-SKU-EX-01', Quantity: 1000, CBM: 0.01,  'Unit Price': 4.50 },
+    ];
+    const ws = XLSX.utils.json_to_sheet(sample, { header: ['SKU', 'Quantity', 'CBM', 'Unit Price'] });
+    ws['!cols'] = [{ wch: 18 }, { wch: 10 }, { wch: 8 }, { wch: 12 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'PO Items');
+    downloadExcel(wb, 'PO_Import_Template.xlsx');
+  };
+
   const handleFile = async (file: File) => {
     setError('');
     try {
@@ -831,7 +844,15 @@ function ImportExcelModal({ catalog, existingSuppliers, onClose, onImport }: {
           <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: 'var(--accent-bg)' }}><Upload size={20} style={{ color: 'var(--accent)' }} /></div>
           <h3 className="text-lg font-bold">ייבוא הזמנת רכש מאקסל</h3>
         </div>
-        <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>עמודות נדרשות: <span className="font-mono">SKU / Quantity / CBM / Unit Price</span> (גם בעברית: מקט / כמות / CBM / מחיר)</p>
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>עמודות נדרשות: <span className="font-mono">SKU / Quantity / CBM / Unit Price</span> (גם בעברית: מקט / כמות / CBM / מחיר)</p>
+          <button onClick={downloadTemplate}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-[transform,background] hover:scale-105 flex-shrink-0"
+            style={{ background: 'rgba(52, 211, 153, 0.1)', color: 'var(--status-received)', border: '1px solid rgba(52, 211, 153, 0.3)' }}>
+            <Download size={12} />
+            הורד תבנית
+          </button>
+        </div>
 
         {/* Step 1: file upload */}
         {rows.length === 0 && (
