@@ -1,18 +1,23 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Plus, Ship, Package, DollarSign } from 'lucide-react';
-import type { Container, PurchaseOrder } from '../types';
+import * as XLSX from 'xlsx';
+import type { Container, ContainerItem, PurchaseOrder } from '../types';
 import { Card, CardHeader, StatCard, StatusBadge, Button, Input } from '../components/Card';
+import { downloadExcel } from '../utils/excelExport';
 import { v4 as uuid } from 'uuid';
 
 interface Props {
   containers: Container[];
   setContainers: React.Dispatch<React.SetStateAction<Container[]>>;
+  setArrivedContainers?: React.Dispatch<React.SetStateAction<Container[]>>;
   pos: PurchaseOrder[];
+  setPos?: React.Dispatch<React.SetStateAction<PurchaseOrder[]>>;
 }
 
-export function ContainersTab({ containers, setContainers, pos }: Props) {
+export function ContainersTab({ containers, setContainers, setArrivedContainers, pos, setPos }: Props) {
   const [showNew, setShowNew] = useState(false);
+  const [confirmArrival, setConfirmArrival] = useState<Container | null>(null);
 
   const totalShipping = containers.reduce((s, c) => s + c.shippingCost, 0);
   const totalUnits = containers.reduce((s, c) => s + c.items.reduce((s2, i) => s2 + i.quantity, 0), 0);
@@ -27,6 +32,105 @@ export function ContainersTab({ containers, setContainers, pos }: Props) {
     loading: 'בטעינה',
     'in-transit': 'בהפלגה',
     arrived: 'הגיע',
+  };
+
+  const itemDisplay = (ci: ContainerItem) => {
+    const live = getItemDetails(ci.poId, ci.lineItemId);
+    if (live.po && live.item) {
+      return {
+        poNumber: live.po.poNumber, supplier: live.po.supplier,
+        sku: live.item.sku, description: live.item.description,
+        unitPrice: live.item.unitPrice, color: live.item.color, category: live.item.category, cbm: live.item.cbm,
+        currency: live.item.currency, shippingCostPerUnit: live.item.shippingCostPerUnit,
+      };
+    }
+    return ci.snapshot ?? null;
+  };
+
+  const handleArrival = (container: Container) => {
+    if (!setArrivedContainers || !setPos) {
+      // Fallback: just flip status (if parent didn't wire arrival props)
+      setContainers(prev => prev.map(c => c.id === container.id ? { ...c, status: 'arrived' } : c));
+      return;
+    }
+    const arrivalDate = new Date().toISOString().slice(0, 10);
+    const unitCount = container.items.reduce((s, i) => s + i.quantity, 0);
+    const costPerUnit = unitCount > 0 ? container.shippingCost / unitCount : 0;
+
+    // Generate Excel for ERP intake
+    const rows = container.items.map(ci => {
+      const d = itemDisplay(ci);
+      const landedCost = d ? d.unitPrice + costPerUnit : 0;
+      return {
+        'מספר מכולה': container.containerNumber,
+        'מספר הזמנה': d?.poNumber ?? '',
+        'ספק': d?.supplier ?? container.supplier,
+        'מק״ט': d?.sku ?? '',
+        'תיאור': d?.description ?? '',
+        'צבע': d?.color ?? '',
+        'קטגוריה': d?.category ?? '',
+        'CBM': d?.cbm ?? 0,
+        'כמות שהתקבלה': ci.quantity,
+        'מחיר יחידה': d?.unitPrice ?? 0,
+        'עלות הובלה ליחידה': costPerUnit.toFixed(2),
+        'עלות נחיתה ליחידה': landedCost.toFixed(2),
+        'סה״כ שורה': (ci.quantity * landedCost).toFixed(2),
+        'תאריך הגעה': arrivalDate,
+      };
+    });
+    if (rows.length > 0) {
+      const ws = XLSX.utils.json_to_sheet(rows);
+      ws['!cols'] = Object.keys(rows[0]).map(k => ({ wch: Math.max(k.length, 14) }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'קליטת מלאי');
+      downloadExcel(wb, `arrival_${container.containerNumber}_${arrivalDate}.xlsx`);
+    }
+
+    // Remove the container quantities from PO line items (partial removal — leave the rest)
+    setPos(prev => prev.map(po => {
+      const containerEntries = container.items.filter(i => i.poId === po.id);
+      if (containerEntries.length === 0) return po;
+      const updatedItems = po.items.map(item => {
+        const entry = containerEntries.find(e => e.lineItemId === item.id);
+        if (!entry) return item;
+        const remainingQty = Math.max(0, item.quantity - entry.quantity);
+        // Subtract from received status (or transit fallback if not yet received)
+        const newBreakdown = { ...item.statusBreakdown };
+        const fromReceived = Math.min(newBreakdown.received, entry.quantity);
+        newBreakdown.received -= fromReceived;
+        let leftToRemove = entry.quantity - fromReceived;
+        if (leftToRemove > 0) {
+          const fromTransit = Math.min(newBreakdown.transit, leftToRemove);
+          newBreakdown.transit -= fromTransit;
+          leftToRemove -= fromTransit;
+        }
+        if (leftToRemove > 0) {
+          // last-resort fallback: reduce ready/production
+          for (const s of ['ready', 'production'] as const) {
+            const take = Math.min(newBreakdown[s], leftToRemove);
+            newBreakdown[s] -= take;
+            leftToRemove -= take;
+            if (leftToRemove <= 0) break;
+          }
+        }
+        return { ...item, quantity: remainingQty, statusBreakdown: newBreakdown };
+      }).filter(i => i.quantity > 0);
+      return { ...po, items: updatedItems };
+    }).filter(po => po.items.length > 0));
+
+    // Snapshot items so the arrived container still displays after PO removal
+    const snapshotted: ContainerItem[] = container.items.map(ci => ({
+      ...ci,
+      snapshot: ci.snapshot ?? (() => {
+        const d = itemDisplay(ci);
+        return d ? { ...d } : undefined;
+      })(),
+    }));
+
+    // Move to arrived archive
+    setArrivedContainers(prev => [{ ...container, status: 'arrived', arrivalDate, items: snapshotted, archivedAt: new Date().toISOString() }, ...prev]);
+    setContainers(prev => prev.filter(c => c.id !== container.id));
+    setConfirmArrival(null);
   };
 
   return (
@@ -83,8 +187,13 @@ export function ContainersTab({ containers, setContainers, pos }: Props) {
                       <select
                         value={container.status}
                         onChange={(e) => {
+                          const next = e.target.value as Container['status'];
+                          if (next === 'arrived') {
+                            setConfirmArrival(container);
+                            return;
+                          }
                           setContainers(prev => prev.map(c =>
-                            c.id === container.id ? { ...c, status: e.target.value as Container['status'] } : c
+                            c.id === container.id ? { ...c, status: next } : c
                           ));
                         }}
                         className="text-xs rounded-lg border px-2 py-1 outline-none"
@@ -92,7 +201,7 @@ export function ContainersTab({ containers, setContainers, pos }: Props) {
                       >
                         <option value="loading">בטעינה</option>
                         <option value="in-transit">בהפלגה</option>
-                        <option value="arrived">הגיע</option>
+                        <option value="arrived">הגיע (קליטה למלאי)</option>
                       </select>
                     </div>
                   </div>
@@ -134,14 +243,14 @@ export function ContainersTab({ containers, setContainers, pos }: Props) {
                   </thead>
                   <tbody>
                     {container.items.map((ci, i) => {
-                      const { po, item } = getItemDetails(ci.poId, ci.lineItemId);
-                      const landedCost = item ? item.unitPrice + costPerUnit : 0;
+                      const d = itemDisplay(ci);
+                      const landedCost = d ? d.unitPrice + costPerUnit : 0;
                       return (
                         <tr key={i} className="border-b" style={{ borderColor: 'var(--border-color)' }}>
-                          <td className="py-2 px-2 font-mono text-xs" style={{ color: 'var(--accent)' }}>{po?.poNumber}</td>
-                          <td className="py-2 px-2 font-mono text-xs">{item?.sku}</td>
+                          <td className="py-2 px-2 font-mono text-xs" style={{ color: 'var(--accent)' }}>{d?.poNumber ?? '—'}</td>
+                          <td className="py-2 px-2 font-mono text-xs">{d?.sku ?? '—'}</td>
                           <td className="py-2 px-2 font-mono">{ci.quantity.toLocaleString()}</td>
-                          <td className="py-2 px-2 font-mono">${item?.unitPrice.toFixed(2)}</td>
+                          <td className="py-2 px-2 font-mono">${d ? d.unitPrice.toFixed(2) : '—'}</td>
                           <td className="py-2 px-2 font-mono font-bold" style={{ color: 'var(--status-received)' }}>
                             ${landedCost.toFixed(2)}
                           </td>
@@ -181,6 +290,34 @@ export function ContainersTab({ containers, setContainers, pos }: Props) {
           );
         })}
       </div>
+
+      {confirmArrival && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfirmArrival(null)}>
+          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+            className="rounded-2xl border p-6 w-full max-w-md" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: 'var(--accent-bg)' }}>
+                <Ship size={20} style={{ color: 'var(--accent)' }} />
+              </div>
+              <h3 className="text-lg font-bold">קליטת מכולה למלאי</h3>
+            </div>
+            <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
+              מכולה <span className="font-mono font-bold">{confirmArrival.containerNumber}</span> ({confirmArrival.items.reduce((s, i) => s + i.quantity, 0).toLocaleString()} יח׳).
+            </p>
+            <ul className="text-xs space-y-1 mb-4 list-disc list-inside" style={{ color: 'var(--text-muted)' }}>
+              <li>יורד אקסל קליטה לקליטה ב-ERP</li>
+              <li>הפריטים יוסרו מדף הזמנות הרכש (רק הכמות שבמכולה)</li>
+              <li>המכולה תועבר ללשונית "מכולות שהגיעו"</li>
+              <li>המלאי לא יתעדכן כאן — סנכרון יבוצע מה-ERP</li>
+            </ul>
+            <div className="flex gap-2 justify-end">
+              <Button variant="secondary" onClick={() => setConfirmArrival(null)}>ביטול</Button>
+              <Button onClick={() => handleArrival(confirmArrival)}>אישור קליטה</Button>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

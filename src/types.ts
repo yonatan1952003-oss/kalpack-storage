@@ -67,6 +67,27 @@ export interface PurchaseOrder {
   date: string;
   items: POLineItem[];
   notes: string;
+  executionDate?: string;
+}
+
+export interface ContainerItem {
+  poId: string;
+  lineItemId: string;
+  quantity: number;
+  /** Snapshot of item data at the time of container creation/arrival.
+   * Required for arrived containers (line items may be removed from POs after arrival). */
+  snapshot?: {
+    poNumber: string;
+    supplier: string;
+    sku: string;
+    description: string;
+    color: string;
+    category: string;
+    cbm: number;
+    unitPrice: number;
+    currency: string;
+    shippingCostPerUnit: number;
+  };
 }
 
 export interface Container {
@@ -77,7 +98,9 @@ export interface Container {
   departureDate: string;
   arrivalDate: string;
   status: 'loading' | 'in-transit' | 'arrived';
-  items: { poId: string; lineItemId: string; quantity: number }[];
+  items: ContainerItem[];
+  /** ISO date when the container was archived (moved to arrivedContainers). */
+  archivedAt?: string;
 }
 
 export interface ProductTemplate {
@@ -116,7 +139,7 @@ export interface AIAlert {
   recommendedQty?: number;
 }
 
-export type TabId = 'dashboard' | 'po' | 'containers' | 'leadtimes' | 'ai' | 'data' | 'suppliers' | 'analytics' | 'graphs' | 'settings';
+export type TabId = 'dashboard' | 'po' | 'containers' | 'arrivedContainers' | 'leadtimes' | 'ai' | 'data' | 'suppliers' | 'analytics' | 'graphs' | 'settings';
 
 export interface Filters {
   supplier: string;

@@ -1,31 +1,57 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, ChevronDown, ChevronUp, ArrowLeftRight, Trash2, Filter, X, Download, Ship as ShipIcon, Edit3, CreditCard } from 'lucide-react';
+import { Plus, ChevronDown, ChevronUp, ArrowLeftRight, Trash2, Filter, X, Download, Upload, Ship as ShipIcon, Edit3, CreditCard, FileSpreadsheet } from 'lucide-react';
 import { STATUS_LABELS, STATUS_COLORS, STATUS_ORDER } from '../types';
-import type { PurchaseOrder, POLineItem, Status, Filters, CatalogProduct } from '../types';
+import type { PurchaseOrder, POLineItem, Status, Filters, CatalogProduct, Container, ContainerItem } from '../types';
 import { Card, StatCard, Button, Input, StatusBadge } from '../components/Card';
 import { v4 as uuid } from 'uuid';
 import * as XLSX from 'xlsx';
 import { downloadExcel } from '../utils/excelExport';
+import { insertInventoryFromCatalog } from '../lib/db';
 
 interface Props {
   pos: PurchaseOrder[];
   setPos: React.Dispatch<React.SetStateAction<PurchaseOrder[]>>;
   onReceive: (sku: string, qty: number) => void;
   catalog: CatalogProduct[];
+  setContainers?: React.Dispatch<React.SetStateAction<Container[]>>;
 }
 
-export function POTab({ pos, setPos, onReceive, catalog }: Props) {
-  const [expandedPO, setExpandedPO] = useState<string | null>(pos[0]?.id || null);
+interface BulkSelected {
+  poId: string;
+  itemId: string;
+  qty: number;
+  fromStatus: Status;
+}
+
+export function POTab({ pos, setPos, onReceive, catalog, setContainers }: Props) {
+  const [expandedPOs, setExpandedPOs] = useState<Set<string>>(() => new Set(pos[0]?.id ? [pos[0].id] : []));
   const [showNewPO, setShowNewPO] = useState(false);
   const [editingPO, setEditingPO] = useState<string | null>(null);
   const [splitModal, setSplitModal] = useState<{ poId: string; item: POLineItem } | null>(null);
   const [bulkMode, setBulkMode] = useState(false);
-  const [bulkSelected, setBulkSelected] = useState<{ poId: string; itemId: string }[]>([]);
+  const [bulkSelected, setBulkSelected] = useState<BulkSelected[]>([]);
   const [bulkTransitModal, setBulkTransitModal] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<Filters>({ supplier: '', color: '', category: '', status: '', search: '' });
   const [statusDetailModal, setStatusDetailModal] = useState<Status | null>(null);
+  const [deleteConfirmPO, setDeleteConfirmPO] = useState<string | null>(null);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const togglePO = (id: string) => {
+    setExpandedPOs(prev => {
+      const next = new Set(prev);
+      if (bulkMode) {
+        // In bulk mode, allow multiple POs open simultaneously
+        if (next.has(id)) next.delete(id); else next.add(id);
+      } else {
+        // Normal mode: single open
+        if (next.has(id)) { next.clear(); } else { next.clear(); next.add(id); }
+      }
+      return next;
+    });
+  };
 
   const allSuppliers = [...new Set(pos.map(p => p.supplier))];
   const allColors = [...new Set(pos.flatMap(p => p.items.map(i => i.color)).filter(Boolean))];
@@ -63,23 +89,41 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
 
   const hasActiveFilters = filters.supplier || filters.color || filters.category || filters.status || filters.search;
 
-  const handleBulkTransfer = (toStatus: Status, transitData?: { jobNumber: string; estimatedArrival: string; shippingCostPerUnit: number }) => {
+  const handleBulkTransfer = (toStatus: Status, transitData?: { containerNumber: string; jobNumber: string; estimatedArrival: string; departureDate: string; shippingCostPerUnit: number }) => {
+    // Build container snapshot items if moving to transit
+    const containerItems: ContainerItem[] = [];
+    let primarySupplier = '';
+
     setPos(prev => prev.map(po => ({
       ...po,
       items: po.items.map(item => {
         const sel = bulkSelected.find(s => s.poId === po.id && s.itemId === item.id);
         if (!sel) return item;
+        const moveQty = Math.min(sel.qty, item.statusBreakdown[sel.fromStatus]);
+        if (moveQty <= 0) return item;
         const newBreakdown = { ...item.statusBreakdown };
-        const toIdx = STATUS_ORDER.indexOf(toStatus);
-        for (let i = toIdx - 1; i >= 0; i--) {
-          const fromSt = STATUS_ORDER[i];
-          if (newBreakdown[fromSt] > 0) {
-            const qty = newBreakdown[fromSt];
-            newBreakdown[toStatus] += qty;
-            newBreakdown[fromSt] = 0;
-            if (toStatus === 'received') onReceive(item.sku, qty);
-            break;
-          }
+        newBreakdown[sel.fromStatus] -= moveQty;
+        newBreakdown[toStatus] += moveQty;
+        if (toStatus === 'received') onReceive(item.sku, moveQty);
+        if (toStatus === 'transit' && transitData) {
+          if (!primarySupplier) primarySupplier = po.supplier;
+          containerItems.push({
+            poId: po.id,
+            lineItemId: item.id,
+            quantity: moveQty,
+            snapshot: {
+              poNumber: po.poNumber,
+              supplier: po.supplier,
+              sku: item.sku,
+              description: item.description,
+              color: item.color,
+              category: item.category,
+              cbm: item.cbm,
+              unitPrice: item.unitPrice,
+              currency: item.currency,
+              shippingCostPerUnit: transitData.shippingCostPerUnit,
+            },
+          });
         }
         return {
           ...item, statusBreakdown: newBreakdown,
@@ -91,7 +135,69 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
         };
       }),
     })));
+
+    // Auto-create container when bulk-transferring to transit
+    if (toStatus === 'transit' && transitData && containerItems.length > 0 && setContainers) {
+      const totalQty = containerItems.reduce((s, i) => s + i.quantity, 0);
+      const newContainer: Container = {
+        id: uuid(),
+        containerNumber: transitData.containerNumber || `CNT-${Date.now()}`,
+        supplier: primarySupplier,
+        shippingCost: transitData.shippingCostPerUnit * totalQty,
+        departureDate: transitData.departureDate,
+        arrivalDate: transitData.estimatedArrival,
+        status: 'in-transit',
+        items: containerItems,
+      };
+      setContainers(prev => [newContainer, ...prev]);
+    }
+
     setBulkSelected([]); setBulkMode(false); setBulkTransitModal(false);
+  };
+
+  const handleDeletePO = (poId: string) => {
+    setPos(prev => prev.filter(p => p.id !== poId));
+    setExpandedPOs(prev => { const next = new Set(prev); next.delete(poId); return next; });
+    setBulkSelected(prev => prev.filter(s => s.poId !== poId));
+    setDeleteConfirmPO(null);
+  };
+
+  const exportPOToExcel = (po: PurchaseOrder) => {
+    const rows = po.items.map(item => ({
+      'מק״ט': item.sku,
+      'תיאור': item.description,
+      'צבע': item.color,
+      'קטגוריה': item.category,
+      'CBM': item.cbm,
+      'כמות': item.quantity,
+      'מחיר יחידה': item.unitPrice,
+      'מטבע': item.currency,
+      'סה״כ שורה': item.quantity * item.unitPrice,
+      'בייצור': item.statusBreakdown.production,
+      'מוכן': item.statusBreakdown.ready,
+      'בים': item.statusBreakdown.transit,
+      'נכנס למלאי': item.statusBreakdown.received,
+      'מספר JOB': item.jobNumber,
+      'צפי הגעה': item.estimatedArrival,
+      'מקדמה ($)': item.prepaidAmount,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = Object.keys(rows[0] || {}).map(k => ({ wch: Math.max(k.length, 14) }));
+    // Header sheet with PO meta
+    const meta = [
+      ['מספר הזמנה', po.poNumber],
+      ['ספק', po.supplier],
+      ['תאריך הזמנה', po.date],
+      ['תאריך ביצוע', po.executionDate || '—'],
+      ['הערות', po.notes],
+      ['סה״כ שווי', po.items.reduce((s, i) => s + i.quantity * i.unitPrice, 0)],
+    ];
+    const metaWs = XLSX.utils.aoa_to_sheet(meta);
+    metaWs['!cols'] = [{ wch: 20 }, { wch: 30 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, metaWs, 'פרטי הזמנה');
+    XLSX.utils.book_append_sheet(wb, ws, 'פריטים');
+    downloadExcel(wb, `${po.poNumber}_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   const exportReceivedToExcel = () => {
@@ -161,11 +267,14 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
           <Button variant="secondary" onClick={() => setShowFilters(!showFilters)}>
             <Filter size={14} className="inline ml-1" /> פילטר
           </Button>
-          <Button variant="secondary" onClick={() => setBulkMode(!bulkMode)}>
-            <ArrowLeftRight size={14} className="inline ml-1" /> העברה בבולק
+          <Button variant="secondary" onClick={() => { setBulkMode(!bulkMode); if (bulkMode) setBulkSelected([]); }}>
+            <ArrowLeftRight size={14} className="inline ml-1" /> {bulkMode ? 'סיים בולק' : 'העברה בבולק'}
+          </Button>
+          <Button variant="secondary" onClick={() => setImportModalOpen(true)}>
+            <Upload size={14} className="inline ml-1" /> ייבוא PO מאקסל
           </Button>
           <Button variant="secondary" onClick={exportReceivedToExcel}>
-            <Download size={14} className="inline ml-1" /> ייצוא לאקסל
+            <Download size={14} className="inline ml-1" /> יצוא קליטה
           </Button>
         </div>
       </div>
@@ -173,15 +282,50 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
       {/* Bulk bar */}
       {bulkMode && bulkSelected.length > 0 && (
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
-          className="flex items-center gap-3 p-4 rounded-2xl border" style={{ background: 'var(--accent-dim)', borderColor: 'var(--accent)' }}>
-          <span className="text-sm font-bold">{bulkSelected.length} פריטים נבחרו</span>
-          <div className="flex gap-2 mr-auto">
-            {STATUS_ORDER.map(status => (
-              <button key={status} onClick={() => status === 'transit' ? setBulkTransitModal(true) : handleBulkTransfer(status)}
-                className="px-4 py-2 rounded-xl text-xs font-bold text-white hover:scale-105 transition-[transform]" style={{ background: STATUS_COLORS[status] }}>
-                העבר ל{STATUS_LABELS[status]}
-              </button>
-            ))}
+          className="p-4 rounded-2xl border space-y-3" style={{ background: 'var(--accent-dim)', borderColor: 'var(--accent)' }}>
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-bold">{bulkSelected.length} פריטים נבחרו · סה״כ {bulkSelected.reduce((s, x) => s + x.qty, 0).toLocaleString()} יח׳</span>
+            <button onClick={() => setBulkSelected([])} className="text-xs underline mr-auto" style={{ color: 'var(--text-muted)' }}>נקה הכל</button>
+            <div className="flex gap-2">
+              {STATUS_ORDER.map(status => (
+                <button key={status} onClick={() => status === 'transit' ? setBulkTransitModal(true) : handleBulkTransfer(status)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-white hover:scale-105 transition-[transform]" style={{ background: STATUS_COLORS[status] }}>
+                  העבר ל{STATUS_LABELS[status]}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* Per-item rows: editable qty + from-status */}
+          <div className="space-y-1.5 max-h-64 overflow-y-auto">
+            {bulkSelected.map((sel, idx) => {
+              const po = pos.find(p => p.id === sel.poId);
+              const item = po?.items.find(i => i.id === sel.itemId);
+              if (!po || !item) return null;
+              const availableStatuses = STATUS_ORDER.filter(s => item.statusBreakdown[s] > 0);
+              const max = item.statusBreakdown[sel.fromStatus] || 0;
+              return (
+                <div key={`${sel.poId}-${sel.itemId}`} className="flex items-center gap-2 text-xs px-2 py-1.5 rounded-lg" style={{ background: 'var(--bg-tertiary)' }}>
+                  <span className="font-mono" style={{ color: 'var(--accent)' }}>{po.poNumber}</span>
+                  <span className="font-mono font-bold">{item.sku}</span>
+                  <span className="opacity-70 truncate flex-1">{item.description}</span>
+                  <label className="opacity-70">מ:</label>
+                  <select value={sel.fromStatus} onChange={e => {
+                    const fs = e.target.value as Status;
+                    setBulkSelected(prev => prev.map((s, i) => i === idx ? { ...s, fromStatus: fs, qty: Math.min(s.qty, item.statusBreakdown[fs]) } : s));
+                  }} className="rounded-md px-2 py-1 text-xs border outline-none" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}>
+                    {availableStatuses.map(s => <option key={s} value={s}>{STATUS_LABELS[s]} ({item.statusBreakdown[s]})</option>)}
+                  </select>
+                  <label className="opacity-70">כמות:</label>
+                  <input type="number" min={1} max={max} value={sel.qty} onChange={e => {
+                    const v = Math.max(1, Math.min(max, parseInt(e.target.value) || 0));
+                    setBulkSelected(prev => prev.map((s, i) => i === idx ? { ...s, qty: v } : s));
+                  }} className="w-20 rounded-md px-2 py-1 text-xs text-center font-mono border outline-none" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }} />
+                  <button onClick={() => setBulkSelected(prev => prev.filter((_, i) => i !== idx))} className="opacity-50 hover:opacity-100">
+                    <X size={14} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </motion.div>
       )}
@@ -231,7 +375,7 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
         {filteredPos.map((po, idx) => {
           const poValue = po.items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
           const poCBM = po.items.reduce((s, i) => s + i.cbm * i.quantity, 0);
-          const isExpanded = expandedPO === po.id;
+          const isExpanded = expandedPOs.has(po.id);
           return (
             <motion.div key={po.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: idx * 0.04 }}>
               <div
@@ -247,7 +391,7 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
                 {/* PO Header — clickable, full-width summary */}
                 <div
                   className="flex items-center justify-between px-8 py-6 cursor-pointer group transition-colors hover:bg-white/[0.02]"
-                  onClick={() => setExpandedPO(isExpanded ? null : po.id)}
+                  onClick={() => togglePO(po.id)}
                 >
                   {/* Right side: PO info */}
                   <div className="flex items-center gap-6">
@@ -263,6 +407,11 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
                     >
                       {po.date}
                     </span>
+                    {po.executionDate && (
+                      <span className="text-xs px-2.5 py-1 rounded-lg" style={{ background: 'var(--accent-bg)', color: 'var(--accent)' }}>
+                        ביצוע: {po.executionDate}
+                      </span>
+                    )}
                   </div>
 
                   {/* Left side: summary stats */}
@@ -283,12 +432,26 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
                     >
                       {po.items.length} פריטים
                     </span>
-                    <button onClick={(e) => { e.stopPropagation(); setEditingPO(po.id); setExpandedPO(null); }}
+                    <button onClick={(e) => { e.stopPropagation(); setEditingPO(po.id); setExpandedPOs(new Set()); }}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-[transform,background] hover:scale-105"
                       style={{ background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}
                       title="ערוך הזמנה">
                       <Edit3 size={14} />
                       <span className="text-xs font-medium">עריכה</span>
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); exportPOToExcel(po); }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-[transform,background] hover:scale-105"
+                      style={{ background: 'rgba(52, 211, 153, 0.1)', color: 'var(--status-received)', border: '1px solid rgba(52, 211, 153, 0.3)' }}
+                      title="ייצוא הזמנה לאקסל">
+                      <FileSpreadsheet size={14} />
+                      <span className="text-xs font-medium">אקסל</span>
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmPO(po.id); }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-[transform,background] hover:scale-105"
+                      style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.3)' }}
+                      title="מחק הזמנה">
+                      <Trash2 size={14} />
+                      <span className="text-xs font-medium">מחק</span>
                     </button>
                   </div>
                 </div>
@@ -318,8 +481,12 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
                               <tr key={item.id} className="border-b hover:bg-white/[0.02]" style={{ borderColor: 'var(--border-color)', background: isSelected ? 'var(--accent-bg)' : undefined }}>
                                 {bulkMode && (
                                   <td className="py-4 px-4">
-                                    <input type="checkbox" checked={isSelected} className="w-4 h-4" 
-                                      onChange={() => setBulkSelected(prev => isSelected ? prev.filter(s => !(s.poId === po.id && s.itemId === item.id)) : [...prev, { poId: po.id, itemId: item.id }])} />
+                                    <input type="checkbox" checked={isSelected} className="w-4 h-4"
+                                      onChange={() => setBulkSelected(prev => {
+                                        if (isSelected) return prev.filter(s => !(s.poId === po.id && s.itemId === item.id));
+                                        const earliest = STATUS_ORDER.find(s => item.statusBreakdown[s] > 0) || 'production';
+                                        return [...prev, { poId: po.id, itemId: item.id, fromStatus: earliest, qty: item.statusBreakdown[earliest] }];
+                                      })} />
                                   </td>
                                 )}
                                 <td className="py-4 px-4 font-mono text-xs font-bold" style={{ color: 'var(--accent)' }}>{item.sku}</td>
@@ -376,6 +543,45 @@ export function POTab({ pos, setPos, onReceive, catalog }: Props) {
         onConfirm={(data) => handleBulkTransfer('transit', data)} onClose={() => setBulkTransitModal(false)} />}
 
       {statusDetailModal && <StatusDetailModal status={statusDetailModal} pos={pos} onClose={() => setStatusDetailModal(null)} />}
+
+      {deleteConfirmPO && (() => {
+        const po = pos.find(p => p.id === deleteConfirmPO);
+        if (!po) return null;
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setDeleteConfirmPO(null)}>
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+              className="rounded-2xl border p-6 w-full max-w-md" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+              onClick={e => e.stopPropagation()}>
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}><Trash2 size={20} style={{ color: '#ef4444' }} /></div>
+                <h3 className="text-lg font-bold">מחיקת הזמנת רכש</h3>
+              </div>
+              <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
+                הפעולה תמחק את ההזמנה <span className="font-mono font-bold" style={{ color: 'var(--accent)' }}>{po.poNumber}</span> ({po.items.length} פריטים) לצמיתות.
+              </p>
+              <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>לא ניתן לבטל. מכולות שכבר נוצרו מההזמנה לא יושפעו.</p>
+              <div className="flex gap-2 justify-end">
+                <Button variant="secondary" onClick={() => setDeleteConfirmPO(null)}>ביטול</Button>
+                <button onClick={() => handleDeletePO(po.id)} className="px-4 py-2 rounded-xl text-sm font-bold text-white" style={{ background: '#ef4444' }}>מחק לצמיתות</button>
+              </div>
+            </motion.div>
+          </div>
+        );
+      })()}
+
+      {importModalOpen && (
+        <ImportExcelModal
+          catalog={catalog}
+          existingSuppliers={[...new Set(pos.map(p => p.supplier))]}
+          onClose={() => setImportModalOpen(false)}
+          onImport={(newPO) => {
+            setPos(prev => [newPO, ...prev]);
+            setImportModalOpen(false);
+          }}
+        />
+      )}
+
+      <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} />
     </div>
   );
 }
@@ -485,25 +691,230 @@ function SplitModal({ item, onSave, onClose }: {
   );
 }
 
-function BulkTransitModal({ count, onConfirm, onClose }: { count: number; onConfirm: (data: { jobNumber: string; estimatedArrival: string; shippingCostPerUnit: number }) => void; onClose: () => void }) {
+function BulkTransitModal({ count, onConfirm, onClose }: { count: number; onConfirm: (data: { containerNumber: string; jobNumber: string; estimatedArrival: string; departureDate: string; shippingCostPerUnit: number }) => void; onClose: () => void }) {
+  const [containerNumber, setContainerNumber] = useState('');
   const [jobNumber, setJobNumber] = useState('');
   const [eta, setEta] = useState('');
+  const [departureDate, setDepartureDate] = useState(new Date().toISOString().slice(0, 10));
   const [cost, setCost] = useState(0);
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-        className="rounded-2xl border p-6 w-full max-w-sm" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+        className="rounded-2xl border p-6 w-full max-w-md" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
         onClick={e => e.stopPropagation()}>
-        <div className="flex items-center gap-2 mb-3"><ShipIcon size={20} style={{ color: 'var(--accent)' }} /><h3 className="text-lg font-bold">העברה לים — {count} פריטים</h3></div>
+        <div className="flex items-center gap-2 mb-1"><ShipIcon size={20} style={{ color: 'var(--accent)' }} /><h3 className="text-lg font-bold">העברה לים — {count} פריטים</h3></div>
+        <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>תיווצר מכולה חדשה אוטומטית בלשונית "מכולות".</p>
         <div className="space-y-3">
+          <Input label="מספר מכולה" value={containerNumber} onChange={e => setContainerNumber(e.target.value)} placeholder="MSCU-XXXXX" />
           <Input label="מספר JOB" value={jobNumber} onChange={e => setJobNumber(e.target.value)} placeholder="JOB-XXX" />
-          <Input label="צפי הגעה לנמל" type="date" value={eta} onChange={e => setEta(e.target.value)} />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="תאריך יציאה" type="date" value={departureDate} onChange={e => setDepartureDate(e.target.value)} />
+            <Input label="צפי הגעה לנמל" type="date" value={eta} onChange={e => setEta(e.target.value)} />
+          </div>
           <Input label="עלות הובלה ליחידה ($)" type="number" step="0.01" value={cost || ''} onChange={e => setCost(parseFloat(e.target.value) || 0)} />
         </div>
         <div className="mt-4 flex gap-2 justify-end">
           <Button variant="secondary" onClick={onClose}>ביטול</Button>
-          <Button onClick={() => onConfirm({ jobNumber, estimatedArrival: eta, shippingCostPerUnit: cost })}>העבר לים</Button>
+          <Button onClick={() => onConfirm({ containerNumber, jobNumber, estimatedArrival: eta, departureDate, shippingCostPerUnit: cost })}>העבר לים + צור מכולה</Button>
         </div>
+      </motion.div>
+    </div>
+  );
+}
+
+/* --- Import PO from Excel --- */
+interface ImportRow {
+  sku: string;
+  quantity: number;
+  cbm: number;
+  unitPrice: number;
+  __new?: boolean; // SKU not in catalog
+}
+
+function ImportExcelModal({ catalog, existingSuppliers, onClose, onImport }: {
+  catalog: CatalogProduct[];
+  existingSuppliers: string[];
+  onClose: () => void;
+  onImport: (po: PurchaseOrder) => void;
+}) {
+  const [rows, setRows] = useState<ImportRow[]>([]);
+  const [poNumber, setPoNumber] = useState(`PO-${new Date().getFullYear()}-${String(Date.now()).slice(-3)}`);
+  const [supplier, setSupplier] = useState('');
+  const [customSupplier, setCustomSupplier] = useState('');
+  const [executionDate, setExecutionDate] = useState(new Date().toISOString().slice(0, 10));
+  const [error, setError] = useState('');
+  const [syncing, setSyncing] = useState(false);
+
+  const handleFile = async (file: File) => {
+    setError('');
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const data: Record<string, unknown>[] = XLSX.utils.sheet_to_json(ws);
+      if (data.length === 0) { setError('הקובץ ריק'); return; }
+      // Flexible column matching: SKU/מקט, Quantity/כמות, CBM, Price/מחיר
+      const parsed: ImportRow[] = data.map(r => {
+        const sku = String(r['SKU'] ?? r['sku'] ?? r['מקט'] ?? r['מק״ט'] ?? r['מק"ט'] ?? '').trim();
+        const quantity = Number(r['Quantity'] ?? r['quantity'] ?? r['כמות'] ?? 0);
+        const cbm = Number(r['CBM'] ?? r['cbm'] ?? 0);
+        const unitPrice = Number(r['Unit Price'] ?? r['UnitPrice'] ?? r['unitPrice'] ?? r['מחיר'] ?? r['מחיר ליחידה'] ?? r['Price'] ?? 0);
+        return { sku, quantity, cbm, unitPrice, __new: !catalog.find(c => c.sku === sku) };
+      }).filter(r => r.sku);
+      if (parsed.length === 0) { setError('לא נמצאו שורות תקינות. ודא שיש עמודות SKU/Quantity/CBM/Unit Price'); return; }
+      setRows(parsed);
+    } catch (e) {
+      setError(`שגיאה בקריאת הקובץ: ${(e as Error).message}`);
+    }
+  };
+
+  const effectiveSupplier = supplier === '__custom__' ? customSupplier : supplier;
+  const canSubmit = rows.length > 0 && poNumber && effectiveSupplier;
+  const newSkuCount = rows.filter(r => r.__new).length;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setSyncing(true);
+    // For new SKUs, push to Supabase inventory table (realtime subscription will pick up)
+    for (const r of rows) {
+      if (r.__new) {
+        try {
+          await insertInventoryFromCatalog({
+            id: '', sku: r.sku, name: r.sku, color: '', category: '',
+            cbm: r.cbm, technicalDetails: '', supplier: effectiveSupplier,
+            unitPrice: r.unitPrice, currency: 'USD',
+            estimatedProductionDays: 30, estimatedShippingDays: 60, quantity: 0,
+          });
+        } catch (e) {
+          console.error('Failed to sync new SKU to Supabase:', r.sku, e);
+        }
+      }
+    }
+    setSyncing(false);
+    const today = new Date().toISOString().slice(0, 10);
+    const newPO: PurchaseOrder = {
+      id: uuid(), poNumber, supplier: effectiveSupplier, date: today, executionDate, notes: 'יובא מאקסל',
+      items: rows.map(r => {
+        const cat = catalog.find(c => c.sku === r.sku);
+        return {
+          id: uuid(),
+          sku: r.sku,
+          description: cat?.name || r.sku,
+          color: cat?.color || '',
+          category: cat?.category || '',
+          cbm: r.cbm,
+          technicalDetails: cat?.technicalDetails || '',
+          quantity: r.quantity,
+          unitPrice: r.unitPrice,
+          currency: 'USD',
+          statusBreakdown: { production: r.quantity, ready: 0, transit: 0, received: 0 },
+          createdAt: today,
+          statusTransitions: [],
+          estimatedProductionDays: cat?.estimatedProductionDays || 30,
+          estimatedShippingDays: cat?.estimatedShippingDays || 60,
+          shippingCostPerUnit: 0,
+          jobNumber: '',
+          estimatedArrival: '',
+          prepaidAmount: 0, prepaidDate: '', prepaidNote: '',
+        };
+      }),
+    };
+    onImport(newPO);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+        className="rounded-2xl border p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-1">
+          <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: 'var(--accent-bg)' }}><Upload size={20} style={{ color: 'var(--accent)' }} /></div>
+          <h3 className="text-lg font-bold">ייבוא הזמנת רכש מאקסל</h3>
+        </div>
+        <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>עמודות נדרשות: <span className="font-mono">SKU / Quantity / CBM / Unit Price</span> (גם בעברית: מקט / כמות / CBM / מחיר)</p>
+
+        {/* Step 1: file upload */}
+        {rows.length === 0 && (
+          <div className="space-y-3">
+            <label className="block">
+              <input type="file" accept=".xlsx,.xls" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+              <div className="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer hover:bg-white/[0.02] transition-colors"
+                style={{ borderColor: 'var(--border-strong)' }}>
+                <Upload size={32} className="mx-auto mb-2" style={{ color: 'var(--text-muted)' }} />
+                <p className="text-sm font-bold">לחץ לבחירת קובץ אקסל</p>
+                <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>.xlsx או .xls</p>
+              </div>
+            </label>
+            {error && <p className="text-xs text-red-400">{error}</p>}
+          </div>
+        )}
+
+        {/* Step 2: preview + assign PO */}
+        {rows.length > 0 && (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+              <Input label="מספר הזמנה" value={poNumber} onChange={e => setPoNumber(e.target.value)} />
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>ספק</label>
+                <select value={supplier} onChange={e => setSupplier(e.target.value)}
+                  className="rounded-lg border px-3 py-2 text-sm outline-none"
+                  style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}>
+                  <option value="">בחר ספק</option>
+                  {existingSuppliers.map(s => <option key={s} value={s}>{s}</option>)}
+                  <option value="__custom__">+ ספק חדש</option>
+                </select>
+              </div>
+              {supplier === '__custom__' && (
+                <Input label="שם ספק חדש" value={customSupplier} onChange={e => setCustomSupplier(e.target.value)} />
+              )}
+              <Input label="תאריך ביצוע" type="date" value={executionDate} onChange={e => setExecutionDate(e.target.value)} />
+            </div>
+            <div className="rounded-xl border overflow-hidden mb-4" style={{ borderColor: 'var(--border-color)' }}>
+              <div className="px-4 py-2 text-xs font-bold flex items-center justify-between" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
+                <span>תצוגה מקדימה — {rows.length} שורות</span>
+                {newSkuCount > 0 && <span style={{ color: 'var(--status-warning)' }}>{newSkuCount} מק״טים חדשים יוקמו בקטלוג + סופהבייס</span>}
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0" style={{ background: 'var(--bg-tertiary)' }}>
+                    <tr>
+                      <th className="text-right px-3 py-2 text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>מק״ט</th>
+                      <th className="text-right px-3 py-2 text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>כמות</th>
+                      <th className="text-right px-3 py-2 text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>CBM</th>
+                      <th className="text-right px-3 py-2 text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>מחיר</th>
+                      <th className="text-right px-3 py-2 text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>סטטוס</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => (
+                      <tr key={i} className="border-t" style={{ borderColor: 'var(--border-color)' }}>
+                        <td className="px-3 py-1.5 font-mono text-xs font-bold" style={{ color: 'var(--accent)' }}>{r.sku}</td>
+                        <td className="px-3 py-1.5 font-mono">{r.quantity.toLocaleString()}</td>
+                        <td className="px-3 py-1.5 font-mono">{r.cbm}</td>
+                        <td className="px-3 py-1.5 font-mono">${r.unitPrice}</td>
+                        <td className="px-3 py-1.5 text-xs">
+                          {r.__new
+                            ? <span style={{ color: 'var(--status-warning)' }}>חדש</span>
+                            : <span style={{ color: 'var(--status-received)' }}>קיים</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-between items-center">
+              <button onClick={() => setRows([])} className="text-xs underline" style={{ color: 'var(--text-muted)' }}>טען קובץ אחר</button>
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={onClose} disabled={syncing}>ביטול</Button>
+                <Button onClick={handleSubmit} disabled={!canSubmit || syncing}>
+                  {syncing ? 'מסנכרן...' : 'צור הזמנה'}
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
       </motion.div>
     </div>
   );
@@ -578,6 +989,7 @@ function POForm({ catalog, allSuppliers, editPO, onSave, onCancel }: {
   const [supplier, setSupplier] = useState(editPO?.supplier || '');
   const [customSupplier, setCustomSupplier] = useState('');
   const [notes, setNotes] = useState(editPO?.notes || '');
+  const [executionDate, setExecutionDate] = useState(editPO?.executionDate || new Date().toISOString().slice(0, 10));
 
   type ItemDraft = {
     id: string; sku: string; description: string; color: string; category: string; cbm: number;
@@ -625,6 +1037,7 @@ function POForm({ catalog, allSuppliers, editPO, onSave, onCancel }: {
       poNumber: poNumber || `PO-${Date.now()}`,
       supplier: effectiveSupplier,
       date: editPO?.date || new Date().toISOString().split('T')[0],
+      executionDate,
       notes,
       items: items.filter(i => i.sku).map(i => ({
         ...i,
@@ -689,6 +1102,7 @@ function POForm({ catalog, allSuppliers, editPO, onSave, onCancel }: {
               ? <Input label="שם ספק" value={customSupplier} onChange={e => setCustomSupplier(e.target.value)} style={inputHighlight} />
               : <Input label="הערות" value={notes} onChange={e => setNotes(e.target.value)} style={inputHighlight} />
             }
+            <Input label="תאריך ביצוע (ממנו מתחיל זמן הייצור)" type="date" value={executionDate} onChange={e => setExecutionDate(e.target.value)} style={inputHighlight} />
           </div>
         </div>
 

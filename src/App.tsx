@@ -13,6 +13,7 @@ import { v4 as uuid } from 'uuid';
 const DashboardTab = lazy(() => import('./tabs/DashboardTab').then(m => ({ default: m.DashboardTab })));
 const POTab = lazy(() => import('./tabs/POTab').then(m => ({ default: m.POTab })));
 const ContainersTab = lazy(() => import('./tabs/ContainersTab').then(m => ({ default: m.ContainersTab })));
+const ArrivedContainersTab = lazy(() => import('./tabs/ArrivedContainersTab').then(m => ({ default: m.ArrivedContainersTab })));
 const LeadTimesTab = lazy(() => import('./tabs/LeadTimesTab').then(m => ({ default: m.LeadTimesTab })));
 const AITab = lazy(() => import('./tabs/AITab').then(m => ({ default: m.AITab })));
 const DataTab = lazy(() => import('./tabs/DataTab').then(m => ({ default: m.DataTab })));
@@ -128,6 +129,7 @@ const TAB_META: Record<TabId, { title: string; subtitle: string }> = {
   dashboard:  { title: 'לוח בקרה',     subtitle: 'סקירה כללית של פעילות המחסן' },
   po:         { title: 'הזמנות רכש',   subtitle: 'ניהול הזמנות מספקים' },
   containers: { title: 'מכולות',        subtitle: 'ניהול מכולות ועלויות הובלה' },
+  arrivedContainers: { title: 'מכולות שהגיעו', subtitle: 'מכולות שנקלטו למלאי - ארכיון' },
   leadtimes:  { title: 'זמני אספקה',   subtitle: 'ייצור + הפלגה לפי מוצר וספק' },
   ai:         { title: 'התראות AI',    subtitle: 'חיזוי מלאי על בסיס מכירות' },
   data:       { title: 'נתונים ומלאי', subtitle: 'קטלוג, מלאי ERP, דוח מכירות' },
@@ -138,7 +140,7 @@ const TAB_META: Record<TabId, { title: string; subtitle: string }> = {
 };
 
 /* ─── URL state helpers ─── */
-const VALID_TABS: TabId[] = ['dashboard', 'po', 'containers', 'leadtimes', 'ai', 'data', 'suppliers', 'analytics', 'graphs', 'settings'];
+const VALID_TABS: TabId[] = ['dashboard', 'po', 'containers', 'arrivedContainers', 'leadtimes', 'ai', 'data', 'suppliers', 'analytics', 'graphs', 'settings'];
 
 function getTabFromURL(): TabId {
   const params = new URLSearchParams(window.location.search);
@@ -158,6 +160,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>(getTabFromURL);
   const [pos, setPos] = useState<PurchaseOrder[]>(() => loadState('kalpack-pos', MOCK_POS));
   const [containers, setContainers] = useState<Container[]>(() => loadState('kalpack-containers', MOCK_CONTAINERS));
+  const [arrivedContainers, setArrivedContainers] = useState<Container[]>(() => loadState('kalpack-arrived-containers', []));
   const [catalog, setCatalog] = useState<CatalogProduct[]>(() => loadState('kalpack-catalog', MOCK_CATALOG));
   const [salesData, setSalesData] = useState<SalesRow[]>(() => loadState('kalpack-sales', MOCK_SALES));
   const [suppliers, setSuppliers] = useState<Supplier[]>(() => loadState('kalpack-suppliers', INITIAL_SUPPLIERS));
@@ -264,6 +267,7 @@ export default function App() {
 
   useEffect(() => { saveState('kalpack-pos', pos); }, [pos]);
   useEffect(() => { saveState('kalpack-containers', containers); }, [containers]);
+  useEffect(() => { saveState('kalpack-arrived-containers', arrivedContainers); }, [arrivedContainers]);
   useEffect(() => { saveState('kalpack-catalog', catalog); }, [catalog]);
   useEffect(() => { saveState('kalpack-sales', salesData); }, [salesData]);
   useEffect(() => { saveState('kalpack-suppliers', suppliers); }, [suppliers]);
@@ -426,9 +430,11 @@ export default function App() {
       case 'dashboard':
         return <DashboardTab pos={pos} containers={containers} salesData={salesData} alerts={alerts} catalog={catalog} onNavigate={handleNavigate} onCreatePO={handleCreatePOFromAlert} />;
       case 'po':
-        return <POTab pos={pos} setPos={setPos} onReceive={handleReceive} catalog={catalog} />;
+        return <POTab pos={pos} setPos={setPos} onReceive={handleReceive} catalog={catalog} setContainers={setContainers} />;
       case 'containers':
-        return <ContainersTab containers={containers} setContainers={setContainers} pos={pos} />;
+        return <ContainersTab containers={containers} setContainers={setContainers} setArrivedContainers={setArrivedContainers} pos={pos} setPos={setPos} />;
+      case 'arrivedContainers':
+        return <ArrivedContainersTab containers={arrivedContainers} pos={pos} />;
       case 'leadtimes':
         return <LeadTimesTab pos={pos} />;
       case 'ai':

@@ -5,6 +5,7 @@ import {
   Settings,
   Search,
   Truck,
+  PackageCheck,
   Package,
   Bell,
   Warehouse,
@@ -42,6 +43,7 @@ const mainNav: { label: string; links: NavLink[] }[] = [
     links: [
       { id: 'po', label: 'הזמנות רכש', icon: ShoppingCart },
       { id: 'containers', label: 'מכולות', icon: Truck },
+      { id: 'arrivedContainers', label: 'מכולות שהגיעו', icon: PackageCheck },
       { id: 'data', label: 'נתונים ומלאי', icon: Package },
       { id: 'leadtimes', label: 'זמני אספקה', icon: Warehouse },
       { id: 'ai', label: 'התראות AI', icon: Bell },
