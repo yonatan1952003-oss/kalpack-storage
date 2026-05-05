@@ -1,0 +1,156 @@
+export type Status = 'production' | 'ready' | 'transit' | 'received';
+
+export const STATUS_LABELS: Record<Status, string> = {
+  production: 'בייצור',
+  ready: 'מוכן',
+  transit: 'בים',
+  received: 'נכנס למלאי',
+};
+
+export const STATUS_COLORS: Record<Status, string> = {
+  production: 'var(--status-production)',
+  ready: 'var(--status-ready)',
+  transit: 'var(--status-transit)',
+  received: 'var(--status-received)',
+};
+
+export const STATUS_ORDER: Status[] = ['production', 'ready', 'transit', 'received'];
+
+// Master product catalog — imported from Excel or created manually
+export interface CatalogProduct {
+  id: string;
+  sku: string;
+  name: string;
+  color: string;
+  category: string;
+  cbm: number;
+  technicalDetails: string;
+  supplier: string;
+  unitPrice: number;
+  currency: string;
+  estimatedProductionDays: number;
+  estimatedShippingDays: number;
+  quantity: number;
+}
+
+export interface POLineItem {
+  id: string;
+  sku: string;
+  description: string;
+  color: string;
+  category: string;
+  cbm: number;
+  technicalDetails: string;
+  quantity: number;
+  unitPrice: number;
+  currency: string;
+  statusBreakdown: Record<Status, number>;
+  containerId?: string;
+  createdAt: string;
+  statusTransitions: { from: Status; to: Status; date: string }[];
+  estimatedProductionDays: number;
+  estimatedShippingDays: number;
+  shippingCostPerUnit: number;
+  // Transit / shipping details
+  jobNumber: string;
+  estimatedArrival: string;
+  // Prepayment tracking
+  prepaidAmount: number;
+  prepaidDate: string;
+  prepaidNote: string;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  poNumber: string;
+  supplier: string;
+  date: string;
+  items: POLineItem[];
+  notes: string;
+}
+
+export interface Container {
+  id: string;
+  containerNumber: string;
+  supplier: string;
+  shippingCost: number;
+  departureDate: string;
+  arrivalDate: string;
+  status: 'loading' | 'in-transit' | 'arrived';
+  items: { poId: string; lineItemId: string; quantity: number }[];
+}
+
+export interface ProductTemplate {
+  id: string;
+  supplier: string;
+  sku: string;
+  description: string;
+  color: string;
+  category: string;
+  cbm: number;
+  technicalDetails: string;
+  unitPrice: number;
+  currency: string;
+  estimatedProductionDays: number;
+  estimatedShippingDays: number;
+}
+
+export type SalesPeriod = 'day' | 'week' | 'month';
+
+export interface SalesRow {
+  sku: string;
+  name: string;
+  salesAmount: number;
+  salesPeriod: SalesPeriod;
+  currentStock: number;
+}
+
+export interface AIAlert {
+  id: string;
+  severity: 'red' | 'yellow' | 'green';
+  title: string;
+  message: string;
+  sku: string;
+  actionLabel?: string;
+  daysUntilStockout?: number;
+  recommendedQty?: number;
+}
+
+export type TabId = 'dashboard' | 'po' | 'containers' | 'leadtimes' | 'ai' | 'data' | 'suppliers' | 'analytics' | 'graphs' | 'settings';
+
+export interface Filters {
+  supplier: string;
+  color: string;
+  category: string;
+  status: Status | '';
+  search: string;
+}
+
+// Supplier management
+export interface Supplier {
+  id: string;
+  name: string;
+  contactName: string;
+  email: string;
+  phone: string;
+  country: string;
+  currency: string;
+  paymentTerms: string;
+  notes: string;
+  rating: number; // 1-5
+  createdAt: string;
+}
+
+// Audit log
+export interface AuditEntry {
+  id: string;
+  timestamp: string;
+  action: 'create' | 'update' | 'delete' | 'import' | 'export' | 'status_change';
+  entity: 'po' | 'container' | 'catalog' | 'sales' | 'supplier' | 'settings';
+  entityId: string;
+  description: string;
+  user: string;
+}
+
+// Theme
+export type Theme = 'dark' | 'light';
