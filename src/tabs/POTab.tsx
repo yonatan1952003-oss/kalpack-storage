@@ -1197,6 +1197,7 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
 }) {
   const [query, setQuery] = useState(value);
   const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -1263,11 +1264,19 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
       />
       {open && suggestions.length > 0 && (
         <div className="absolute top-full mt-1 right-0 left-0 z-50 rounded-xl border overflow-hidden flex flex-col"
-          style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-strong)', boxShadow: 'var(--card-shadow)', maxHeight: 'min(70vh, 640px)' }}>
+          style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-strong)', boxShadow: 'var(--card-shadow)', maxHeight: expanded ? '90vh' : 'min(70vh, 640px)' }}>
           <div className="px-3 py-1.5 text-[11px] flex items-center justify-between border-b flex-shrink-0"
             style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}>
             <span>{suggestions.length} תוצאות מתוך {catalog.length}</span>
-            <span className="opacity-60">↑↓ ניווט · Enter לבחירה</span>
+            <div className="flex items-center gap-3">
+              <span className="opacity-60 hidden sm:inline">↑↓ ניווט · Enter לבחירה</span>
+              <button type="button" onMouseDown={(e) => { e.preventDefault(); setExpanded(p => !p); }}
+                className="px-2 py-0.5 rounded-md text-[10px] font-bold hover:scale-105 transition-[transform]"
+                style={{ background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}
+                title={expanded ? 'מצב רגיל' : 'הרחב לתצוגה מלאה'}>
+                {expanded ? '⤡ צמצם' : '⤢ הרחב'}
+              </button>
+            </div>
           </div>
           <div className="overflow-y-auto">
             {suggestions.map((c, i) => (
