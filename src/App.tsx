@@ -572,7 +572,7 @@ export default function App() {
       case 'dashboard':
         return <DashboardTab pos={pos} containers={containers} salesData={salesData} alerts={alerts} catalog={catalog} onNavigate={handleNavigate} onCreatePO={handleCreatePOFromAlert} />;
       case 'po':
-        return <POTab pos={pos} setPos={handleSetPos} onReceive={handleReceive} catalog={catalog} setContainers={handleSetContainers} />;
+        return <POTab pos={pos} setPos={handleSetPos} onReceive={handleReceive} catalog={catalog} suppliers={suppliers} setContainers={handleSetContainers} />;
       case 'containers':
         return <ContainersTab
           containers={containers}

@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, ChevronDown, ChevronUp, ArrowLeftRight, Trash2, Filter, X, Download, Upload, Ship as ShipIcon, Edit3, CreditCard, FileSpreadsheet } from 'lucide-react';
 import { STATUS_LABELS, STATUS_COLORS, STATUS_ORDER } from '../types';
-import type { PurchaseOrder, POLineItem, Status, Filters, CatalogProduct, Container, ContainerItem, ContainerType } from '../types';
+import type { PurchaseOrder, POLineItem, Status, Filters, CatalogProduct, Container, ContainerItem, ContainerType, Supplier } from '../types';
 import { CONTAINER_VOLUMES } from '../types';
 import { Card, StatCard, Button, Input, StatusBadge } from '../components/Card';
 import { v4 as uuid } from 'uuid';
@@ -15,6 +15,7 @@ interface Props {
   setPos: React.Dispatch<React.SetStateAction<PurchaseOrder[]>>;
   onReceive: (sku: string, qty: number) => void;
   catalog: CatalogProduct[];
+  suppliers?: Supplier[];
   setContainers?: React.Dispatch<React.SetStateAction<Container[]>>;
 }
 
@@ -25,7 +26,7 @@ interface BulkSelected {
   fromStatus: Status;
 }
 
-export function POTab({ pos, setPos, onReceive, catalog, setContainers }: Props) {
+export function POTab({ pos, setPos, onReceive, catalog, suppliers, setContainers }: Props) {
   const [expandedPOs, setExpandedPOs] = useState<Set<string>>(() => new Set(pos[0]?.id ? [pos[0].id] : []));
   const [showNewPO, setShowNewPO] = useState(false);
   const [editingPO, setEditingPO] = useState<string | null>(null);
@@ -70,7 +71,13 @@ export function POTab({ pos, setPos, onReceive, catalog, setContainers }: Props)
     });
   };
 
-  const allSuppliers = [...new Set(pos.map(p => p.supplier))];
+  // Merge supplier names from existing POs, the catalog, and the user's
+// Suppliers tab so the dropdown shows everyone they've defined.
+const allSuppliers = [...new Set([
+  ...pos.map(p => p.supplier),
+  ...catalog.map(c => c.supplier),
+  ...(suppliers ?? []).map(s => s.name),
+].filter(Boolean))];
   const allColors = [...new Set(pos.flatMap(p => p.items.map(i => i.color)).filter(Boolean))];
   const allCategories = [...new Set(pos.flatMap(p => p.items.map(i => i.category)).filter(Boolean))];
 
@@ -409,7 +416,7 @@ export function POTab({ pos, setPos, onReceive, catalog, setContainers }: Props)
       {(showNewPO || editingPO) && (
         <POForm
           catalog={catalog}
-          allSuppliers={[...new Set([...allSuppliers, ...catalog.map(c => c.supplier)])]}
+          allSuppliers={allSuppliers}
           editPO={editingPO ? pos.find(p => p.id === editingPO) : undefined}
           onSave={(po) => {
             if (editingPO) {
@@ -629,7 +636,7 @@ export function POTab({ pos, setPos, onReceive, catalog, setContainers }: Props)
       {importModalOpen && (
         <ImportExcelModal
           catalog={catalog}
-          existingSuppliers={[...new Set(pos.map(p => p.supplier))]}
+          existingSuppliers={allSuppliers}
           onClose={() => setImportModalOpen(false)}
           onImport={(newPO) => {
             setPos(prev => [newPO, ...prev]);
