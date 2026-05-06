@@ -1436,7 +1436,7 @@ function POForm({ catalog, allSuppliers, editPO, onSave, onCancel }: {
                     />
                     <Input label="תיאור" value={item.description} onChange={e => updateItem(idx, 'description', e.target.value)} style={inputHighlight} />
                     <Input label="צבע" value={item.color} onChange={e => updateItem(idx, 'color', e.target.value)} style={inputHighlight} />
-                    <Input label="CBM" type="text" value={item.cbm.toString()} onChange={e => { const v = e.target.value; if (/^\d*\.?\d*$/.test(v)) updateItem(idx, 'cbm', v === '' ? 0 : parseFloat(v) || 0); }} placeholder="0" style={inputHighlight} />
+                    <Input label="CBM" type="number" step="0.001" min="0" value={item.cbm || ''} onChange={e => updateItem(idx, 'cbm', parseFloat(e.target.value) || 0)} placeholder="0.000" style={inputHighlight} />
                     <Input label="כמות" type="number" value={item.quantity || ''} onChange={e => updateItem(idx, 'quantity', parseInt(e.target.value) || 0)}
                       style={{ ...inputHighlight, borderColor: 'rgba(52, 211, 153,0.5)', boxShadow: '0 0 0 1px rgba(52, 211, 153,0.2)' }} />
                     <Input label={item.unitPrice > 0 ? 'מחיר יחידה ($)' : 'מחיר יחידה ($) — חובה'} type="number" step="0.01" value={item.unitPrice || ''} onChange={e => updateItem(idx, 'unitPrice', parseFloat(e.target.value) || 0)}

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, Ship, Package, DollarSign } from 'lucide-react';
+import { Plus, Ship, Package, DollarSign, Trash2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import type { Container, ContainerItem, ContainerType, PurchaseOrder } from '../types';
 import { CONTAINER_VOLUMES } from '../types';
@@ -22,6 +22,7 @@ interface Props {
 export function ContainersTab({ containers, setContainers, setArrivedContainers, pos, setPos, onArchive }: Props) {
   const [showNew, setShowNew] = useState(false);
   const [confirmArrival, setConfirmArrival] = useState<Container | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Container | null>(null);
 
   const totalShipping = containers.reduce((s, c) => s + c.shippingCost, 0);
   const totalUnits = containers.reduce((s, c) => s + c.items.reduce((s2, i) => s2 + i.quantity, 0), 0);
@@ -255,6 +256,13 @@ export function ContainersTab({ containers, setContainers, setArrivedContainers,
                         <option value="arrived">הגיע (קליטה למלאי)</option>
                       </select>
                     </div>
+                    <button onClick={() => setConfirmDelete(container)}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs hover:scale-105 transition-[transform]"
+                      style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.3)' }}
+                      title="מחק מכולה">
+                      <Trash2 size={12} />
+                      <span>מחק</span>
+                    </button>
                   </div>
                 </div>
 
@@ -378,6 +386,36 @@ export function ContainersTab({ containers, setContainers, setArrivedContainers,
             <div className="flex gap-2 justify-end">
               <Button variant="secondary" onClick={() => setConfirmArrival(null)}>ביטול</Button>
               <Button onClick={() => handleArrival(confirmArrival)}>אישור קליטה</Button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfirmDelete(null)}>
+          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+            className="rounded-2xl border p-6 w-full max-w-md" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
+                <Trash2 size={20} style={{ color: '#ef4444' }} />
+              </div>
+              <h3 className="text-lg font-bold">מחיקת מכולה</h3>
+            </div>
+            <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
+              המכולה <span className="font-mono font-bold">{confirmDelete.containerNumber}</span> ({confirmDelete.items.reduce((s, i) => s + i.quantity, 0).toLocaleString()} יח׳) תימחק לצמיתות.
+            </p>
+            <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+              שים לב — הפריטים בהזמנות לא יחזרו אוטומטית מ-transit לסטטוס קודם. אם רצית לקלוט למלאי, השתמש ב-״הגיע״ ולא במחיקה.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <Button variant="secondary" onClick={() => setConfirmDelete(null)}>ביטול</Button>
+              <button onClick={() => {
+                setContainers(prev => prev.filter(c => c.id !== confirmDelete.id));
+                setConfirmDelete(null);
+              }} className="px-4 py-2 rounded-xl text-sm font-bold text-white" style={{ background: '#ef4444' }}>
+                מחק לצמיתות
+              </button>
             </div>
           </motion.div>
         </div>

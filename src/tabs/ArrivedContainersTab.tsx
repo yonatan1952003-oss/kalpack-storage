@@ -1,16 +1,35 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { PackageCheck, Ship, Package, DollarSign, Download } from 'lucide-react';
+import { PackageCheck, Ship, Package, DollarSign, Download, Trash2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import type { Container, ContainerItem, PurchaseOrder } from '../types';
 import { Card, StatCard, StatusBadge, Button } from '../components/Card';
 import { downloadExcel } from '../utils/excelExport';
+import { supabase } from '../lib/supabase';
 
 interface Props {
   containers: Container[];
   pos: PurchaseOrder[];
+  setContainers?: React.Dispatch<React.SetStateAction<Container[]>>;
 }
 
-export function ArrivedContainersTab({ containers, pos }: Props) {
+export function ArrivedContainersTab({ containers, pos, setContainers }: Props) {
+  const [confirmDelete, setConfirmDelete] = useState<Container | null>(null);
+
+  const handleDelete = async (c: Container) => {
+    // Direct DELETE on arrived_containers — CASCADE removes line items.
+    // We don't go through poService because there's no markContainerArrived
+    // equivalent for the archive (the archive is the terminal state).
+    try {
+      const { error } = await supabase.from('arrived_containers').delete().eq('id', c.id);
+      if (error) throw error;
+      // Optimistic local update; realtime will reconcile
+      setContainers?.(prev => prev.filter(x => x.id !== c.id));
+    } catch (e) {
+      console.error('Failed to delete arrived container:', e);
+    }
+    setConfirmDelete(null);
+  };
   const totalShipping = containers.reduce((s, c) => s + c.shippingCost, 0);
   const totalUnits = containers.reduce((s, c) => s + c.items.reduce((s2, i) => s2 + i.quantity, 0), 0);
 
@@ -105,6 +124,13 @@ export function ArrivedContainersTab({ containers, pos }: Props) {
                     <Button variant="secondary" onClick={() => reExportExcel(container)}>
                       <Download size={14} className="inline ml-1" /> אקסל קליטה
                     </Button>
+                    <button onClick={() => setConfirmDelete(container)}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium hover:scale-105 transition-[transform]"
+                      style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.3)' }}
+                      title="מחק מארכיון">
+                      <Trash2 size={12} />
+                      <span>מחק</span>
+                    </button>
                   </div>
                 </div>
 
@@ -187,6 +213,34 @@ export function ArrivedContainersTab({ containers, pos }: Props) {
           );
         })}
       </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfirmDelete(null)}>
+          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+            className="rounded-2xl border p-6 w-full max-w-md" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
+                <Trash2 size={20} style={{ color: '#ef4444' }} />
+              </div>
+              <h3 className="text-lg font-bold">מחיקה מארכיון</h3>
+            </div>
+            <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
+              המכולה <span className="font-mono font-bold">{confirmDelete.containerNumber}</span> תימחק מארכיון המכולות שהגיעו.
+            </p>
+            <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+              הפעולה משפיעה רק על תיעוד ההגעה — המלאי שכבר נקלט ל-ERP לא מושפע.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <Button variant="secondary" onClick={() => setConfirmDelete(null)}>ביטול</Button>
+              <button onClick={() => handleDelete(confirmDelete)}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-white" style={{ background: '#ef4444' }}>
+                מחק לצמיתות
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

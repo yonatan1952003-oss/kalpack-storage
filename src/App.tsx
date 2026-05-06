@@ -583,7 +583,7 @@ export default function App() {
           onArchive={handleArchiveContainer}
         />;
       case 'arrivedContainers':
-        return <ArrivedContainersTab containers={arrivedContainers} pos={pos} />;
+        return <ArrivedContainersTab containers={arrivedContainers} pos={pos} setContainers={setArrivedContainers} />;
       case 'leadtimes':
         return <LeadTimesTab pos={pos} />;
       case 'ai':
