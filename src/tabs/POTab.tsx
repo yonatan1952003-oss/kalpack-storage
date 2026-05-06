@@ -39,6 +39,22 @@ export function POTab({ pos, setPos, onReceive, catalog, setContainers }: Props)
   const [deleteConfirmPO, setDeleteConfirmPO] = useState<string | null>(null);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [completedPOIds, setCompletedPOIds] = useState<string[]>([]);
+  const prevPosRef = useRef<PurchaseOrder[]>(pos);
+
+  // Detect POs that just transitioned to fully-received and surface a banner
+  // recommending deletion since the order is complete.
+  useEffect(() => {
+    const newly: string[] = [];
+    for (const po of pos) {
+      const isComplete = po.items.length > 0 && po.items.every(i => i.statusBreakdown.received === i.quantity);
+      const prev = prevPosRef.current.find(p => p.id === po.id);
+      const wasComplete = prev && prev.items.length > 0 && prev.items.every(i => i.statusBreakdown.received === i.quantity);
+      if (isComplete && !wasComplete && !completedPOIds.includes(po.id)) newly.push(po.id);
+    }
+    if (newly.length > 0) setCompletedPOIds(prev => [...prev, ...newly]);
+    prevPosRef.current = pos;
+  }, [pos, completedPOIds]);
 
   const togglePO = (id: string) => {
     setExpandedPOs(prev => {
@@ -331,6 +347,42 @@ export function POTab({ pos, setPos, onReceive, catalog, setContainers }: Props)
           </div>
         </motion.div>
       )}
+
+      {/* Completion banner — POs that just became 100% received */}
+      <AnimatePresence>
+        {completedPOIds.map(poId => {
+          const po = pos.find(p => p.id === poId);
+          if (!po) return null;
+          return (
+            <motion.div key={poId}
+              initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+              className="flex items-center gap-3 p-4 rounded-2xl border"
+              style={{ background: 'rgba(52, 211, 153, 0.08)', borderColor: 'rgba(52, 211, 153, 0.4)' }}>
+              <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(52, 211, 153, 0.18)' }}>
+                <span style={{ color: 'var(--status-received)', fontSize: 20 }}>✓</span>
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-bold" style={{ color: 'var(--status-received)' }}>
+                  הזמנה {po.poNumber} הסתיימה — כל הכמות נכנסה למלאי
+                </p>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  מומלץ למחוק את ההזמנה — המלאי כבר אצלנו וירשם דרך ה-ERP.
+                </p>
+              </div>
+              <button onClick={() => setCompletedPOIds(prev => prev.filter(id => id !== poId))}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium"
+                style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}>
+                התעלם
+              </button>
+              <button onClick={() => { setCompletedPOIds(prev => prev.filter(id => id !== poId)); setDeleteConfirmPO(poId); }}
+                className="px-4 py-1.5 rounded-lg text-xs font-bold text-white"
+                style={{ background: '#ef4444' }}>
+                מחק הזמנה
+              </button>
+            </motion.div>
+          );
+        })}
+      </AnimatePresence>
 
       {/* Filters */}
       <AnimatePresence>
@@ -1100,11 +1152,11 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
   }
 
   const suggestions = useMemo(() => {
-    if (!query.trim()) return catalog.slice(0, 10);
+    if (!query.trim()) return catalog.slice(0, 50);
     const q = query.toLowerCase();
     return catalog.filter(c =>
       c.sku.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)
-    ).slice(0, 10);
+    ).slice(0, 50);
   }, [query, catalog]);
 
   // Close on outside click
@@ -1154,8 +1206,8 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
         style={style}
       />
       {open && suggestions.length > 0 && (
-        <div className="absolute top-full mt-1 right-0 left-0 z-50 rounded-xl border overflow-hidden max-h-72 overflow-y-auto"
-          style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-strong)', boxShadow: 'var(--card-shadow)' }}>
+        <div className="absolute top-full mt-1 right-0 left-0 z-50 rounded-xl border overflow-hidden overflow-y-auto"
+          style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-strong)', boxShadow: 'var(--card-shadow)', maxHeight: 'min(60vh, 480px)' }}>
           {suggestions.map((c, i) => (
             <button
               key={c.id}
