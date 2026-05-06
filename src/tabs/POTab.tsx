@@ -1,4 +1,5 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, ChevronDown, ChevronUp, ArrowLeftRight, Trash2, Filter, X, Download, Upload, Ship as ShipIcon, Edit3, CreditCard, FileSpreadsheet } from 'lucide-react';
 import { STATUS_LABELS, STATUS_COLORS, STATUS_ORDER } from '../types';
@@ -1200,6 +1201,26 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
   const [expanded, setExpanded] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  // Anchor the dropdown to the input via fixed positioning so it can escape
+  // any ancestor with overflow:hidden (the POForm wrapper has it).
+  const [anchor, setAnchor] = useState<{ top: number; left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open || !inputRef.current) return;
+    const update = () => {
+      if (!inputRef.current) return;
+      const r = inputRef.current.getBoundingClientRect();
+      setAnchor({ top: r.bottom + 4, left: r.left, width: r.width });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [open, expanded]);
 
   // Sync external value -> input when parent updates (e.g. fillFromCatalog)
   const lastValueRef = useRef(value);
@@ -1216,11 +1237,14 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
     ).slice(0, 50);
   }, [query, catalog]);
 
-  // Close on outside click
+  // Close on outside click — also accept clicks inside the portaled dropdown
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      const insideWrap = wrapRef.current?.contains(t);
+      const insideDropdown = dropdownRef.current?.contains(t);
+      if (!insideWrap && !insideDropdown) setOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -1252,6 +1276,7 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
     <div className="flex flex-col gap-1.5 relative" ref={wrapRef}>
       <label className="text-[11px] font-medium tracking-wide" style={{ color: 'var(--text-muted)' }}>מק״ט</label>
       <input
+        ref={inputRef}
         type="text"
         value={query}
         placeholder="הקלד או חפש..."
@@ -1262,9 +1287,20 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
         className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30 transition-[border-color,box-shadow]"
         style={style}
       />
-      {open && suggestions.length > 0 && (
-        <div className="absolute top-full mt-1 right-0 left-0 z-50 rounded-xl border overflow-hidden flex flex-col"
-          style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-strong)', boxShadow: 'var(--card-shadow)', maxHeight: expanded ? '90vh' : 'min(70vh, 640px)' }}>
+      {open && suggestions.length > 0 && anchor && createPortal(
+        <div ref={dropdownRef}
+          className="rounded-xl border overflow-hidden flex flex-col"
+          style={{
+            position: 'fixed',
+            top: anchor.top,
+            left: expanded ? Math.max(16, anchor.left - 200) : anchor.left,
+            width: expanded ? Math.min(window.innerWidth - 32, Math.max(anchor.width + 400, 600)) : anchor.width,
+            zIndex: 1000,
+            background: 'var(--bg-secondary)',
+            borderColor: 'var(--border-strong)',
+            boxShadow: 'var(--card-shadow)',
+            maxHeight: expanded ? '85vh' : 'min(70vh, 640px)',
+          }}>
           <div className="px-3 py-1.5 text-[11px] flex items-center justify-between border-b flex-shrink-0"
             style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}>
             <span>{suggestions.length} תוצאות מתוך {catalog.length}</span>
@@ -1294,7 +1330,8 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
               </button>
             ))}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
       {open && suggestions.length === 0 && query.trim() && (
         <div className="absolute top-full mt-1 right-0 left-0 z-50 rounded-xl border p-3 text-xs"
