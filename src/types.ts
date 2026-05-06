@@ -90,6 +90,16 @@ export interface ContainerItem {
   };
 }
 
+export type ContainerType = '20FT' | '40FT' | '40HC';
+
+/** Standard usable volume per container type (CBM). Slightly conservative
+ * vs nominal capacity to leave room for packing inefficiency. */
+export const CONTAINER_VOLUMES: Record<ContainerType, { label: string; volume: number }> = {
+  '20FT': { label: '20FT Standard', volume: 28 },
+  '40FT': { label: '40FT Standard', volume: 58 },
+  '40HC': { label: '40HC High Cube', volume: 68 },
+};
+
 export interface Container {
   id: string;
   containerNumber: string;
@@ -99,6 +109,8 @@ export interface Container {
   arrivalDate: string;
   status: 'loading' | 'in-transit' | 'arrived';
   items: ContainerItem[];
+  /** Container type for capacity validation. */
+  containerType?: ContainerType;
   /** ISO date when the container was archived (moved to arrivedContainers). */
   archivedAt?: string;
 }

@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Plus, Ship, Package, DollarSign } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import type { Container, ContainerItem, PurchaseOrder } from '../types';
+import type { Container, ContainerItem, ContainerType, PurchaseOrder } from '../types';
+import { CONTAINER_VOLUMES } from '../types';
 import { Card, CardHeader, StatCard, StatusBadge, Button, Input } from '../components/Card';
 import { downloadExcel } from '../utils/excelExport';
 import { v4 as uuid } from 'uuid';
@@ -162,6 +163,13 @@ export function ContainersTab({ containers, setContainers, setArrivedContainers,
         {containers.map((container, idx) => {
           const unitCount = container.items.reduce((s, i) => s + i.quantity, 0);
           const costPerUnit = unitCount > 0 ? container.shippingCost / unitCount : 0;
+          const containerCBM = container.items.reduce((s, i) => {
+            const d = itemDisplay(i);
+            return s + (d ? d.cbm * i.quantity : 0);
+          }, 0);
+          const ctype = container.containerType ?? '40HC';
+          const cap = CONTAINER_VOLUMES[ctype].volume;
+          const cbmPct = cap > 0 ? Math.min((containerCBM / cap) * 100, 100) : 0;
 
           return (
             <motion.div
@@ -204,6 +212,19 @@ export function ContainersTab({ containers, setContainers, setArrivedContainers,
                         <option value="arrived">הגיע (קליטה למלאי)</option>
                       </select>
                     </div>
+                  </div>
+                </div>
+
+                {/* CBM capacity bar */}
+                <div className="mb-4 p-3 rounded-lg space-y-2" style={{ background: 'var(--bg-tertiary)' }}>
+                  <div className="flex items-center justify-between text-xs">
+                    <span style={{ color: 'var(--text-muted)' }}>קיבולת {ctype} ({cap} CBM)</span>
+                    <span className="font-mono font-bold" style={{ color: containerCBM > cap ? '#ef4444' : 'var(--text-primary)' }}>
+                      {containerCBM.toFixed(2)} / {cap} CBM ({cbmPct.toFixed(0)}%)
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+                    <div className="h-full" style={{ width: `${cbmPct}%`, background: containerCBM > cap ? '#ef4444' : cbmPct > 85 ? 'var(--status-warning)' : 'var(--status-received)' }} />
                   </div>
                 </div>
 
@@ -328,6 +349,7 @@ function NewContainerForm({ pos, onSave, onCancel }: {
   onCancel: () => void;
 }) {
   const [containerNumber, setContainerNumber] = useState('');
+  const [containerType, setContainerType] = useState<ContainerType>('40HC');
   const [supplier, setSupplier] = useState('');
   const [shippingCost, setShippingCost] = useState(0);
   const [departureDate, setDepartureDate] = useState('');
@@ -336,6 +358,22 @@ function NewContainerForm({ pos, onSave, onCancel }: {
 
   const suppliers = [...new Set(pos.map(p => p.supplier))];
   const supplierPOs = pos.filter(p => p.supplier === supplier);
+
+  // Compute total CBM
+  const totalCBM = selectedItems.reduce((sum, si) => {
+    const po = pos.find(p => p.id === si.poId);
+    const item = po?.items.find(i => i.id === si.lineItemId);
+    return sum + (item ? item.cbm * si.quantity : 0);
+  }, 0);
+  const capacity = CONTAINER_VOLUMES[containerType].volume;
+  const usagePct = capacity > 0 ? (totalCBM / capacity) * 100 : 0;
+  const overCapacity = totalCBM > capacity;
+  const remaining = capacity - totalCBM;
+  const recommendedType: ContainerType =
+    totalCBM <= CONTAINER_VOLUMES['20FT'].volume ? '20FT'
+    : totalCBM <= CONTAINER_VOLUMES['40FT'].volume ? '40FT'
+    : '40HC';
+  const barColor = overCapacity ? '#ef4444' : usagePct > 85 ? 'var(--status-warning)' : 'var(--status-received)';
 
   const addItem = (poId: string, lineItemId: string) => {
     if (selectedItems.find(i => i.lineItemId === lineItemId)) return;
@@ -369,6 +407,45 @@ function NewContainerForm({ pos, onSave, onCancel }: {
         <Input label="עלות הובלה ($)" type="number" value={shippingCost || ''} onChange={e => setShippingCost(parseFloat(e.target.value) || 0)} />
         <Input label="תאריך יציאה" type="date" value={departureDate} onChange={e => setDepartureDate(e.target.value)} />
         <Input label="תאריך הגעה משוערת" type="date" value={arrivalDate} onChange={e => setArrivalDate(e.target.value)} />
+      </div>
+
+      {/* Container type + CBM capacity */}
+      <div className="p-4 rounded-xl border mb-4 space-y-3" style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border-color)' }}>
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-bold">סוג מכולה וקיבולת</span>
+          <span className="text-xs font-mono" style={{ color: barColor }}>
+            {totalCBM.toFixed(2)} / {capacity} CBM ({usagePct.toFixed(0)}%)
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {(['20FT', '40FT', '40HC'] as ContainerType[]).map(t => (
+            <button key={t} type="button" onClick={() => setContainerType(t)}
+              className="px-3 py-2 rounded-lg text-xs font-bold transition-[transform,background] hover:scale-105 relative"
+              style={{
+                background: containerType === t ? 'var(--accent-bg)' : 'var(--bg-secondary)',
+                border: `1px solid ${containerType === t ? 'var(--accent)' : 'var(--border-color)'}`,
+                color: containerType === t ? 'var(--accent)' : 'var(--text-secondary)',
+              }}>
+              {t}
+              <div className="text-[10px] font-normal opacity-70">{CONTAINER_VOLUMES[t].volume} CBM</div>
+              {recommendedType === t && totalCBM > 0 && (
+                <span className="absolute -top-1 -left-1 text-[9px] px-1 rounded-full font-bold" style={{ background: 'var(--status-received)', color: 'white' }}>מומלץ</span>
+              )}
+            </button>
+          ))}
+        </div>
+        <div className="h-3 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+          <div className="h-full transition-[width]" style={{ width: `${Math.min(usagePct, 100)}%`, background: barColor }} />
+        </div>
+        {overCapacity ? (
+          <div className="text-xs p-2 rounded-lg" style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444' }}>
+            ⚠ חריגה של {(totalCBM - capacity).toFixed(2)} CBM — נדרשות {Math.ceil(totalCBM / capacity)} מכולות מסוג {containerType}.
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            נשארו {remaining.toFixed(2)} CBM פנויים
+          </div>
+        )}
       </div>
 
       {supplier && (
@@ -430,7 +507,7 @@ function NewContainerForm({ pos, onSave, onCancel }: {
 
       <div className="flex gap-2 justify-end">
         <Button variant="secondary" onClick={onCancel}>ביטול</Button>
-        <Button onClick={() => {
+        <Button disabled={overCapacity} onClick={() => {
           onSave({
             id: uuid(),
             containerNumber: containerNumber || `CNT-${Date.now()}`,
@@ -439,9 +516,10 @@ function NewContainerForm({ pos, onSave, onCancel }: {
             departureDate,
             arrivalDate,
             status: 'loading',
+            containerType,
             items: selectedItems,
           });
-        }}>שמור מכולה</Button>
+        }}>{overCapacity ? 'מעל קיבולת' : 'שמור מכולה'}</Button>
       </div>
     </Card>
   );
