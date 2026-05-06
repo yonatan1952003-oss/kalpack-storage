@@ -1141,6 +1141,54 @@ function StatusDetailModal({ status, pos, onClose }: { status: Status; pos: Purc
 }
 
 /* --- SKU Autocomplete (type-to-search) --- */
+/**
+ * Decimal input that survives intermediate states like "" / "0" / "0." / "0.5".
+ * The parent receives a number; the local string state is what's rendered, so
+ * a trailing dot or leading zero doesn't get lost when parseFloat coerces it.
+ */
+function DecimalInput({ value, onChange, style, placeholder, label }: {
+  value: number;
+  onChange: (n: number) => void;
+  style?: React.CSSProperties;
+  placeholder?: string;
+  label: string;
+}) {
+  const [str, setStr] = useState<string>(value === 0 ? '' : String(value));
+  // Sync external resets (e.g., fillFromCatalog overwriting cbm)
+  const lastRef = useRef(value);
+  if (value !== lastRef.current) {
+    lastRef.current = value;
+    const externalStr = value === 0 ? '' : String(value);
+    if (parseFloat(str) !== value && str !== externalStr) setStr(externalStr);
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-[11px] font-medium tracking-wide" style={{ color: 'var(--text-muted)' }}>{label}</label>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={str}
+        placeholder={placeholder}
+        onChange={e => {
+          const v = e.target.value;
+          // Accept empty, integers, and decimals (with optional leading dot).
+          if (v === '' || /^\d*\.?\d*$/.test(v)) {
+            setStr(v);
+            const n = v === '' || v === '.' ? 0 : parseFloat(v);
+            if (!Number.isNaN(n)) onChange(n);
+          }
+        }}
+        onBlur={() => {
+          // Normalize trailing dot on blur: "0." → "0"
+          if (str.endsWith('.')) setStr(str.slice(0, -1));
+        }}
+        className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30 transition-[border-color,box-shadow]"
+        style={style}
+      />
+    </div>
+  );
+}
+
 function SkuAutocomplete({ value, catalog, onSelect, style }: {
   value: string;
   catalog: CatalogProduct[];
@@ -1214,22 +1262,29 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
         style={style}
       />
       {open && suggestions.length > 0 && (
-        <div className="absolute top-full mt-1 right-0 left-0 z-50 rounded-xl border overflow-hidden overflow-y-auto"
-          style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-strong)', boxShadow: 'var(--card-shadow)', maxHeight: 'min(60vh, 480px)' }}>
-          {suggestions.map((c, i) => (
-            <button
-              key={c.id}
-              type="button"
-              onMouseDown={(e) => { e.preventDefault(); commitChoice(c.sku, true); }}
-              onMouseEnter={() => setActiveIdx(i)}
-              className="w-full text-right px-3 py-2 flex items-center justify-between gap-2 transition-colors"
-              style={{ background: i === activeIdx ? 'var(--accent-bg)' : 'transparent' }}
-            >
-              <span className="font-mono text-xs font-bold" style={{ color: 'var(--accent)' }}>{c.sku}</span>
-              <span className="text-xs flex-1 text-right truncate" style={{ color: 'var(--text-secondary)' }}>{c.name}</span>
-              {c.color && <span className="text-[10px] opacity-60">{c.color}</span>}
-            </button>
-          ))}
+        <div className="absolute top-full mt-1 right-0 left-0 z-50 rounded-xl border overflow-hidden flex flex-col"
+          style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border-strong)', boxShadow: 'var(--card-shadow)', maxHeight: 'min(70vh, 640px)' }}>
+          <div className="px-3 py-1.5 text-[11px] flex items-center justify-between border-b flex-shrink-0"
+            style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}>
+            <span>{suggestions.length} תוצאות מתוך {catalog.length}</span>
+            <span className="opacity-60">↑↓ ניווט · Enter לבחירה</span>
+          </div>
+          <div className="overflow-y-auto">
+            {suggestions.map((c, i) => (
+              <button
+                key={c.id}
+                type="button"
+                onMouseDown={(e) => { e.preventDefault(); commitChoice(c.sku, true); }}
+                onMouseEnter={() => setActiveIdx(i)}
+                className="w-full text-right px-3 py-2 flex items-center justify-between gap-2 transition-colors"
+                style={{ background: i === activeIdx ? 'var(--accent-bg)' : 'transparent' }}
+              >
+                <span className="font-mono text-xs font-bold" style={{ color: 'var(--accent)' }}>{c.sku}</span>
+                <span className="text-xs flex-1 text-right truncate" style={{ color: 'var(--text-secondary)' }}>{c.name}</span>
+                {c.color && <span className="text-[10px] opacity-60">{c.color}</span>}
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {open && suggestions.length === 0 && query.trim() && (
@@ -1443,7 +1498,7 @@ function POForm({ catalog, allSuppliers, editPO, onSave, onCancel }: {
                     />
                     <Input label="תיאור" value={item.description} onChange={e => updateItem(idx, 'description', e.target.value)} style={inputHighlight} />
                     <Input label="צבע" value={item.color} onChange={e => updateItem(idx, 'color', e.target.value)} style={inputHighlight} />
-                    <Input label="CBM" type="number" step="0.001" min="0" value={item.cbm || ''} onChange={e => updateItem(idx, 'cbm', parseFloat(e.target.value) || 0)} placeholder="0.000" style={inputHighlight} />
+                    <DecimalInput label="CBM" value={item.cbm} onChange={v => updateItem(idx, 'cbm', v)} placeholder="0.000" style={inputHighlight} />
                     <Input label="כמות" type="number" value={item.quantity || ''} onChange={e => updateItem(idx, 'quantity', parseInt(e.target.value) || 0)}
                       style={{ ...inputHighlight, borderColor: 'rgba(52, 211, 153,0.5)', boxShadow: '0 0 0 1px rgba(52, 211, 153,0.2)' }} />
                     <Input label={item.unitPrice > 0 ? 'מחיר יחידה ($)' : 'מחיר יחידה ($) — חובה'} type="number" step="0.01" value={item.unitPrice || ''} onChange={e => updateItem(idx, 'unitPrice', parseFloat(e.target.value) || 0)}
