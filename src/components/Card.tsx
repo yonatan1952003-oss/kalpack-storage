@@ -161,22 +161,26 @@ export function SupplierBlock({
 export function LeadBar({
   prod,
   ship,
-  max = 100,
+  max,
 }: {
   prod: number;
   ship: number;
   max?: number;
 }) {
-  const prodPct = Math.min(100, (prod / max) * 100);
-  const shipPct = Math.min(100, (ship / max) * 100);
+  // Default scale to the larger of (prod+ship) and 100 so the bar always fills
+  // properly even when the items have small lead times.
+  const total = prod + ship;
+  const scale = max ?? Math.max(total, 100);
+  const prodPct = scale > 0 ? (prod / scale) * 100 : 0;
+  const shipPct = scale > 0 ? (ship / scale) * 100 : 0;
   return (
     <div
-      className="relative h-1.5 w-full rounded-full overflow-hidden"
-      style={{ background: 'rgba(255,255,255,0.04)' }}
+      className="relative h-2.5 w-full rounded-full overflow-hidden flex"
+      style={{ background: 'var(--bg-tertiary)' }}
       role="img"
       aria-label={`ייצור ${prod} ימים, הפלגה ${ship} ימים`}
     >
-      <div className="absolute inset-y-0 right-0 flex">
+      {prodPct > 0 && (
         <div
           className="h-full"
           style={{
@@ -185,6 +189,8 @@ export function LeadBar({
             boxShadow: '0 0 6px rgba(167,139,250,0.4)',
           }}
         />
+      )}
+      {shipPct > 0 && (
         <div
           className="h-full"
           style={{
@@ -193,7 +199,7 @@ export function LeadBar({
             boxShadow: '0 0 6px rgba(56,189,248,0.4)',
           }}
         />
-      </div>
+      )}
     </div>
   );
 }

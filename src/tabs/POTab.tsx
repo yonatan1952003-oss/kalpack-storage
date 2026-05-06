@@ -658,13 +658,14 @@ function FilterSelect({ label, value, options, labels, onChange }: { label: stri
 }
 
 function StatusBar({ breakdown, total }: { breakdown: Record<Status, number>; total: number }) {
+  const safeTotal = total > 0 ? total : Math.max(1, Object.values(breakdown).reduce((s, v) => s + v, 0));
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex rounded-full overflow-hidden h-1.5 w-full bg-slate-800">
+      <div className="flex rounded-full overflow-hidden h-2.5 w-full" style={{ background: 'var(--bg-tertiary)' }}>
         {STATUS_ORDER.map(status => {
-          const pct = (breakdown[status] / total) * 100;
+          const pct = (breakdown[status] / safeTotal) * 100;
           if (pct <= 0) return null;
-          return <div key={status} style={{ width: `${pct}%`, background: STATUS_COLORS[status] }} />;
+          return <div key={status} className="h-full" style={{ width: `${pct}%`, background: STATUS_COLORS[status] }} />;
         })}
       </div>
       <div className="flex gap-1.5 flex-wrap">
