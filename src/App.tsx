@@ -1,9 +1,15 @@
-import { useState, useEffect, lazy, Suspense, Component, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense, Component, useCallback, type ReactNode } from 'react';
 import type { TabId, PurchaseOrder, Container, CatalogProduct, SalesRow, AIAlert, Supplier, AuditEntry, Theme, POLineItem } from './types';
-import { MOCK_POS, MOCK_CONTAINERS, MOCK_CATALOG, MOCK_SALES, generateAlerts } from './store';
+import { MOCK_CATALOG, MOCK_SALES, generateAlerts } from './store';
 import { loadState, saveState } from './utils/persistence';
 import { fetchInventory, rowToCatalog, rowToSales, type InventoryRow } from './lib/db';
 import { supabase } from './lib/supabase';
+import {
+  listPOs, listContainers, listArrivedContainers,
+  createPO, updatePO as updatePOService, deletePO,
+  createContainer, updateContainer, deleteContainer, markContainerArrived,
+  migrateLocalToSupabaseIfEmpty,
+} from './lib/poService';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { GlobalSearch } from './components/GlobalSearch';
@@ -158,9 +164,14 @@ function setTabInURL(tab: TabId) {
 /* ─── Main App ─── */
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>(getTabFromURL);
-  const [pos, setPos] = useState<PurchaseOrder[]>(() => loadState('kalpack-pos', MOCK_POS));
-  const [containers, setContainers] = useState<Container[]>(() => loadState('kalpack-containers', MOCK_CONTAINERS));
-  const [arrivedContainers, setArrivedContainers] = useState<Container[]>(() => loadState('kalpack-arrived-containers', []));
+  // Bootstrap from localStorage so the UI has something to render before the
+  // Supabase fetch returns; on first mount we either replace it with live DB
+  // contents or — if the DB is empty — push the local data up as a one-time
+  // migration. After bootstrap, Supabase is the source of truth and these
+  // arrays are kept in sync via realtime + service calls.
+  const [pos, setPos] = useState<PurchaseOrder[]>(() => loadState<PurchaseOrder[]>('kalpack-pos', []));
+  const [containers, setContainers] = useState<Container[]>(() => loadState<Container[]>('kalpack-containers', []));
+  const [arrivedContainers, setArrivedContainers] = useState<Container[]>(() => loadState<Container[]>('kalpack-arrived-containers', []));
   const [catalog, setCatalog] = useState<CatalogProduct[]>(() => loadState('kalpack-catalog', MOCK_CATALOG));
   const [salesData, setSalesData] = useState<SalesRow[]>(() => loadState('kalpack-sales', MOCK_SALES));
   const [suppliers, setSuppliers] = useState<Supplier[]>(() => loadState('kalpack-suppliers', INITIAL_SUPPLIERS));
@@ -265,9 +276,66 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => { saveState('kalpack-pos', pos); }, [pos]);
-  useEffect(() => { saveState('kalpack-containers', containers); }, [containers]);
-  useEffect(() => { saveState('kalpack-arrived-containers', arrivedContainers); }, [arrivedContainers]);
+  // Bootstrap: fetch POs / containers / arrived from Supabase. If the DB is
+  // empty *and* localStorage has content, push the local content up as a
+  // one-time migration. Then subscribe to realtime updates on all three tables.
+  const bootedRef = useRef(false);
+  useEffect(() => {
+    if (bootedRef.current) return;
+    bootedRef.current = true;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        // Read local snapshot before we replace state
+        const localPos     = loadState<PurchaseOrder[]>('kalpack-pos', []);
+        const localCont    = loadState<Container[]>('kalpack-containers', []);
+        const localArrived = loadState<Container[]>('kalpack-arrived-containers', []);
+
+        const result = await migrateLocalToSupabaseIfEmpty({
+          pos: localPos, containers: localCont, arrivedContainers: localArrived,
+        });
+        if (result.migrated) {
+          console.log('[Supabase] Migrated localStorage → DB:', result.counts);
+        }
+
+        const [freshPos, freshCont, freshArrived] = await Promise.all([
+          listPOs(), listContainers(), listArrivedContainers(),
+        ]);
+        if (cancelled) return;
+        setPos(freshPos);
+        setContainers(freshCont);
+        setArrivedContainers(freshArrived);
+        // localStorage is no longer the source of truth for these — clear the slots
+        try { localStorage.removeItem('kalpack-pos'); } catch { /* noop */ }
+        try { localStorage.removeItem('kalpack-containers'); } catch { /* noop */ }
+        try { localStorage.removeItem('kalpack-arrived-containers'); } catch { /* noop */ }
+      } catch (e) {
+        console.error('[Supabase] Bootstrap failed:', e);
+      }
+    })();
+
+    // Realtime: re-fetch the affected slice on any change. Simpler than
+    // mutating state from the payload (and avoids ordering/race issues).
+    const refetchPos = async () => { try { setPos(await listPOs()); } catch (e) { console.error(e); } };
+    const refetchContainers = async () => { try { setContainers(await listContainers()); } catch (e) { console.error(e); } };
+    const refetchArrived = async () => { try { setArrivedContainers(await listArrivedContainers()); } catch (e) { console.error(e); } };
+
+    const ch = supabase
+      .channel('po-system-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_orders' }, refetchPos)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_order_line_items' }, refetchPos)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'containers' }, () => { refetchContainers(); refetchPos(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'container_line_items' }, refetchContainers)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'arrived_containers' }, () => { refetchArrived(); refetchPos(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'arrived_container_line_items' }, refetchArrived)
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(ch);
+    };
+  }, []);
   useEffect(() => { saveState('kalpack-catalog', catalog); }, [catalog]);
   useEffect(() => { saveState('kalpack-sales', salesData); }, [salesData]);
   useEffect(() => { saveState('kalpack-suppliers', suppliers); }, [suppliers]);
@@ -329,6 +397,77 @@ export default function App() {
     );
     addAudit({ action: 'status_change', entity: 'po', entityId: sku, description: `${qty} יח׳ מ-${sku} נכנסו למלאי`, user: 'מנהל מערכת' });
   }, [addAudit]);
+
+  // ─── Supabase sync wrappers ────────────────────────────────────────────────
+  // Diff the previous and next state and push only the changes. We keep using
+  // setPos/setContainers in child components (instant local feedback) and the
+  // wrapper fires the matching service calls in the background. The realtime
+  // subscription reconciles other tabs / devices.
+  const posSyncRef = useRef<PurchaseOrder[]>(pos);
+  posSyncRef.current = pos;
+
+  const handleSetPos: React.Dispatch<React.SetStateAction<PurchaseOrder[]>> = useCallback((updater) => {
+    setPos(prev => {
+      const next = typeof updater === 'function'
+        ? (updater as (p: PurchaseOrder[]) => PurchaseOrder[])(prev)
+        : updater;
+      // Diff
+      const prevById = new Map(prev.map(p => [p.id, p]));
+      const nextById = new Map(next.map(p => [p.id, p]));
+      // Deletions
+      for (const [id] of prevById) {
+        if (!nextById.has(id)) {
+          deletePO(id).catch(e => console.error('[poSync] deletePO failed:', id, e));
+        }
+      }
+      // Inserts + updates
+      for (const [id, np] of nextById) {
+        const pp = prevById.get(id);
+        if (!pp) {
+          createPO(np).catch(e => console.error('[poSync] createPO failed:', id, e));
+        } else if (JSON.stringify(pp) !== JSON.stringify(np)) {
+          updatePOService(np).catch(e => console.error('[poSync] updatePO failed:', id, e));
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSetContainers: React.Dispatch<React.SetStateAction<Container[]>> = useCallback((updater) => {
+    setContainers(prev => {
+      const next = typeof updater === 'function'
+        ? (updater as (c: Container[]) => Container[])(prev)
+        : updater;
+      const prevById = new Map(prev.map(c => [c.id, c]));
+      const nextById = new Map(next.map(c => [c.id, c]));
+      for (const [id] of prevById) {
+        if (!nextById.has(id)) {
+          // Note: the arrival flow drives this through markContainerArrived
+          // (in ContainersTab) — that path doesn't call setContainers directly.
+          // A removal here is a user-initiated delete.
+          deleteContainer(id).catch(e => console.error('[poSync] deleteContainer failed:', id, e));
+        }
+      }
+      for (const [id, nc] of nextById) {
+        const pc = prevById.get(id);
+        if (!pc) {
+          createContainer(nc).catch(e => console.error('[poSync] createContainer failed:', id, e));
+        } else if (JSON.stringify(pc) !== JSON.stringify(nc)) {
+          updateContainer(nc).catch(e => console.error('[poSync] updateContainer failed:', id, e));
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  // Arrived containers are produced by the DB trigger — we never insert
+  // directly from the UI. setArrivedContainers stays as a pure local setter
+  // (used optimistically by ContainersTab during arrival, then reconciled
+  // by realtime).
+  const handleArchiveContainer = useCallback(async (containerId: string) => {
+    try { await markContainerArrived(containerId); }
+    catch (e) { console.error('[poSync] markContainerArrived failed:', containerId, e); }
+  }, []);
 
   // Auto-reorder: create PO from AI alert
   const handleCreatePOFromAlert = useCallback((supplier: string, items: { sku: string; qty: number }[]) => {
@@ -405,16 +544,19 @@ export default function App() {
     } catch { /* invalid JSON handled by caller */ }
   }, [addAudit]);
 
-  // Clear all data
+  // Clear all data. POs / containers / arrived live in Supabase now — going
+  // through the sync wrappers will issue DELETE per row. Other slices stay
+  // local, so we reset them in place.
   const handleClearData = useCallback(() => {
-    setPos(MOCK_POS);
-    setContainers(MOCK_CONTAINERS);
+    handleSetPos([]);
+    handleSetContainers([]);
+    setArrivedContainers([]);
     setCatalog(MOCK_CATALOG);
     setSalesData(MOCK_SALES);
     setSuppliers(INITIAL_SUPPLIERS);
     setAuditLog([]);
     addAudit({ action: 'delete', entity: 'settings', entityId: 'all', description: 'כל הנתונים אופסו', user: 'מנהל מערכת' });
-  }, [addAudit]);
+  }, [addAudit, handleSetPos, handleSetContainers]);
 
   // Navigate and close sidebar on mobile — push to history for back button support
   const handleNavigate = useCallback((tab: TabId) => {
@@ -430,9 +572,16 @@ export default function App() {
       case 'dashboard':
         return <DashboardTab pos={pos} containers={containers} salesData={salesData} alerts={alerts} catalog={catalog} onNavigate={handleNavigate} onCreatePO={handleCreatePOFromAlert} />;
       case 'po':
-        return <POTab pos={pos} setPos={setPos} onReceive={handleReceive} catalog={catalog} setContainers={setContainers} />;
+        return <POTab pos={pos} setPos={handleSetPos} onReceive={handleReceive} catalog={catalog} setContainers={handleSetContainers} />;
       case 'containers':
-        return <ContainersTab containers={containers} setContainers={setContainers} setArrivedContainers={setArrivedContainers} pos={pos} setPos={setPos} />;
+        return <ContainersTab
+          containers={containers}
+          setContainers={handleSetContainers}
+          setArrivedContainers={setArrivedContainers}
+          pos={pos}
+          setPos={handleSetPos}
+          onArchive={handleArchiveContainer}
+        />;
       case 'arrivedContainers':
         return <ArrivedContainersTab containers={arrivedContainers} pos={pos} />;
       case 'leadtimes':

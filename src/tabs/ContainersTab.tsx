@@ -14,9 +14,12 @@ interface Props {
   setArrivedContainers?: React.Dispatch<React.SetStateAction<Container[]>>;
   pos: PurchaseOrder[];
   setPos?: React.Dispatch<React.SetStateAction<PurchaseOrder[]>>;
+  /** When provided, arrival is delegated to the DB (trigger handles archive +
+   * status_breakdown shift). When omitted, the local-only flow is used. */
+  onArchive?: (containerId: string) => Promise<void>;
 }
 
-export function ContainersTab({ containers, setContainers, setArrivedContainers, pos, setPos }: Props) {
+export function ContainersTab({ containers, setContainers, setArrivedContainers, pos, setPos, onArchive }: Props) {
   const [showNew, setShowNew] = useState(false);
   const [confirmArrival, setConfirmArrival] = useState<Container | null>(null);
 
@@ -49,6 +52,46 @@ export function ContainersTab({ containers, setContainers, setArrivedContainers,
   };
 
   const handleArrival = (container: Container) => {
+    // When wired to Supabase, delegate the data move to the DB trigger.
+    // The frontend still generates the ERP intake Excel locally.
+    if (onArchive) {
+      const unitCount = container.items.reduce((s, i) => s + i.quantity, 0);
+      const costPerUnit = unitCount > 0 ? container.shippingCost / unitCount : 0;
+      const arrivalDate = new Date().toISOString().slice(0, 10);
+      const rows = container.items.map(ci => {
+        const d = itemDisplay(ci);
+        const landedCost = d ? d.unitPrice + costPerUnit : 0;
+        return {
+          'מספר מכולה': container.containerNumber,
+          'מספר הזמנה': d?.poNumber ?? '',
+          'ספק': d?.supplier ?? container.supplier,
+          'מק״ט': d?.sku ?? '',
+          'תיאור': d?.description ?? '',
+          'צבע': d?.color ?? '',
+          'קטגוריה': d?.category ?? '',
+          'CBM': d?.cbm ?? 0,
+          'כמות שהתקבלה': ci.quantity,
+          'מחיר יחידה': d?.unitPrice ?? 0,
+          'עלות הובלה ליחידה': costPerUnit.toFixed(2),
+          'עלות נחיתה ליחידה': landedCost.toFixed(2),
+          'סה״כ שורה': (ci.quantity * landedCost).toFixed(2),
+          'תאריך הגעה': arrivalDate,
+        };
+      });
+      if (rows.length > 0) {
+        const ws = XLSX.utils.json_to_sheet(rows);
+        ws['!cols'] = Object.keys(rows[0]).map(k => ({ wch: Math.max(k.length, 14) }));
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'קליטת מלאי');
+        downloadExcel(wb, `arrival_${container.containerNumber}_${arrivalDate}.xlsx`);
+      }
+      // Optimistic UI: remove from active list immediately. Realtime will
+      // populate the arrived list a moment later.
+      setContainers(prev => prev.filter(c => c.id !== container.id));
+      onArchive(container.id);
+      setConfirmArrival(null);
+      return;
+    }
     if (!setArrivedContainers || !setPos) {
       // Fallback: just flip status (if parent didn't wire arrival props)
       setContainers(prev => prev.map(c => c.id === container.id ? { ...c, status: 'arrived' } : c));

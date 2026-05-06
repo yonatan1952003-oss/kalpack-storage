@@ -374,3 +374,79 @@ export async function deleteContainer(containerId: string): Promise<void> {
   const { error } = await supabase.from('containers').delete().eq('id', containerId);
   if (error) throw error;
 }
+
+/* ─── One-time migration: localStorage → Supabase ─── */
+
+/**
+ * Push localStorage state into Supabase if the DB is empty. Idempotent and
+ * safe — bails out as soon as it sees any existing rows in the relevant table.
+ *
+ * Touches ONLY the 6 PO/container tables created for this project.
+ */
+export async function migrateLocalToSupabaseIfEmpty(local: {
+  pos: PurchaseOrder[];
+  containers: Container[];
+  arrivedContainers: Container[];
+}): Promise<{ migrated: boolean; counts: { pos: number; containers: number; arrived: number } }> {
+  // Probe each table; bail on any failure or any existing data.
+  const [{ count: poCount, error: poErr }, { count: cCount, error: cErr }, { count: aCount, error: aErr }] = await Promise.all([
+    supabase.from('purchase_orders').select('*', { count: 'exact', head: true }),
+    supabase.from('containers').select('*', { count: 'exact', head: true }),
+    supabase.from('arrived_containers').select('*', { count: 'exact', head: true }),
+  ]);
+  if (poErr || cErr || aErr) throw poErr ?? cErr ?? aErr;
+
+  if ((poCount ?? 0) > 0 || (cCount ?? 0) > 0 || (aCount ?? 0) > 0) {
+    return { migrated: false, counts: { pos: 0, containers: 0, arrived: 0 } };
+  }
+
+  // Push POs (with line items)
+  for (const po of local.pos) {
+    try { await createPO(po); } catch (e) { console.error('Migrate PO failed:', po.poNumber, e); }
+  }
+
+  // Push active containers
+  for (const c of local.containers) {
+    try { await createContainer(c); } catch (e) { console.error('Migrate container failed:', c.containerNumber, e); }
+  }
+
+  // Push arrived containers — direct insert (skip the trigger; we are seeding
+  // historical data, not arriving new containers).
+  for (const c of local.arrivedContainers) {
+    try {
+      const { data: row, error } = await supabase
+        .from('arrived_containers')
+        .insert({
+          id: c.id,
+          container_number: c.containerNumber,
+          supplier: c.supplier,
+          shipping_cost: c.shippingCost,
+          departure_date: c.departureDate || null,
+          arrival_date: c.arrivalDate || null,
+          status: 'arrived',
+          archived_at: c.archivedAt ?? new Date().toISOString(),
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      if (c.items.length > 0) {
+        await supabase.from('arrived_container_line_items').insert(
+          c.items.map(it => ({
+            arrived_container_id: (row as { id: string }).id,
+            purchase_order_id: it.poId || null,
+            line_item_id: it.lineItemId || null,
+            quantity: it.quantity,
+            snapshot: it.snapshot ?? {},
+          }))
+        );
+      }
+    } catch (e) {
+      console.error('Migrate arrived container failed:', c.containerNumber, e);
+    }
+  }
+
+  return {
+    migrated: true,
+    counts: { pos: local.pos.length, containers: local.containers.length, arrived: local.arrivedContainers.length },
+  };
+}
