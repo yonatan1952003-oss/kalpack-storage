@@ -95,7 +95,10 @@ const allSuppliers = [...new Set([
         }
         return true;
       });
-      if (filteredItems.length === 0) return null;
+      // Keep POs with no items at all (genuinely empty PO row in DB) so the
+      // user can see, edit, or delete them. Only hide when items existed but
+      // got filtered out — that's the user's filter doing its job.
+      if (po.items.length > 0 && filteredItems.length === 0) return null;
       return { ...po, items: filteredItems };
     }).filter(Boolean) as PurchaseOrder[];
   }, [pos, filters]);
@@ -571,6 +574,13 @@ const allSuppliers = [...new Set([
                           })}
                         </tbody>
                       </table>
+
+                      {po.items.length === 0 && (
+                        <div className="px-8 py-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                          <p className="font-bold mb-1" style={{ color: 'var(--text-secondary)' }}>אין פריטים בהזמנה</p>
+                          <p className="text-xs">לחץ על "עריכה" כדי להוסיף פריטים, או על "מחק" אם ההזמנה לא רלוונטית.</p>
+                        </div>
+                      )}
 
                       {/* Footer summary */}
                       <div
