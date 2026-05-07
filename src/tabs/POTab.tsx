@@ -1289,6 +1289,7 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
       />
       {open && suggestions.length > 0 && anchor && createPortal(
         <div ref={dropdownRef}
+          dir="rtl"
           className="rounded-xl border overflow-hidden flex flex-col"
           style={{
             position: 'fixed',
@@ -1301,34 +1302,58 @@ function SkuAutocomplete({ value, catalog, onSelect, style }: {
             boxShadow: 'var(--card-shadow)',
             maxHeight: expanded ? '85vh' : 'min(70vh, 640px)',
           }}>
-          <div className="px-3 py-1.5 text-[11px] flex items-center justify-between border-b flex-shrink-0"
+          {/* Sticky header — count + keyboard hints + expand toggle.
+              Stays visible while the user scrolls through long result lists. */}
+          <div className="px-3 py-2 text-[11px] flex items-center justify-between gap-3 border-b flex-shrink-0 sticky top-0 z-10"
             style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}>
-            <span>{suggestions.length} תוצאות מתוך {catalog.length}</span>
-            <div className="flex items-center gap-3">
-              <span className="opacity-60 hidden sm:inline">↑↓ ניווט · Enter לבחירה</span>
+            <span className="flex-shrink-0">{suggestions.length} תוצאות מתוך {catalog.length}</span>
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <span className="opacity-60 hidden md:inline">↑↓ ניווט · Enter לבחירה</span>
               <button type="button" onMouseDown={(e) => { e.preventDefault(); setExpanded(p => !p); }}
-                className="px-2 py-0.5 rounded-md text-[10px] font-bold hover:scale-105 transition-[transform]"
-                style={{ background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}
-                title={expanded ? 'מצב רגיל' : 'הרחב לתצוגה מלאה'}>
+                aria-label={expanded ? 'מצב רגיל' : 'הרחב לתצוגה מלאה'}
+                className="px-2 py-1 rounded-md text-[10px] font-bold hover:opacity-80 transition-opacity"
+                style={{ background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
                 {expanded ? '⤡ צמצם' : '⤢ הרחב'}
               </button>
             </div>
           </div>
-          <div className="overflow-y-auto">
-            {suggestions.map((c, i) => (
-              <button
-                key={c.id}
-                type="button"
-                onMouseDown={(e) => { e.preventDefault(); commitChoice(c.sku, true); }}
-                onMouseEnter={() => setActiveIdx(i)}
-                className="w-full text-right px-3 py-2 flex items-center justify-between gap-2 transition-colors"
-                style={{ background: i === activeIdx ? 'var(--accent-bg)' : 'transparent' }}
-              >
-                <span className="font-mono text-xs font-bold" style={{ color: 'var(--accent)' }}>{c.sku}</span>
-                <span className="text-xs flex-1 text-right truncate" style={{ color: 'var(--text-secondary)' }}>{c.name}</span>
-                {c.color && <span className="text-[10px] opacity-60">{c.color}</span>}
-              </button>
-            ))}
+          {/* Scrollable list. RTL direction puts the scrollbar on the left,
+              which is the expected behavior in Hebrew interfaces. */}
+          <div className="overflow-y-auto" style={{ direction: 'rtl' }}>
+            {suggestions.map((c, i) => {
+              const active = i === activeIdx;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); commitChoice(c.sku, true); }}
+                  onMouseEnter={() => setActiveIdx(i)}
+                  className="w-full text-right px-3 py-2.5 flex items-center justify-between gap-3 transition-colors relative"
+                  style={{
+                    background: active ? 'var(--accent)' : 'transparent',
+                    color: active ? 'white' : 'var(--text-primary)',
+                  }}
+                >
+                  {active && (
+                    <span aria-hidden="true" className="absolute inset-y-0 right-0 w-1"
+                      style={{ background: 'white', opacity: 0.9 }} />
+                  )}
+                  <span className="font-mono text-xs font-bold flex-shrink-0" style={{ color: active ? 'white' : 'var(--accent)' }}>
+                    {c.sku}
+                  </span>
+                  <span className="text-xs flex-1 text-right truncate"
+                    style={{ color: active ? 'rgba(255,255,255,0.92)' : 'var(--text-secondary)' }}>
+                    {c.name}
+                  </span>
+                  {c.color && (
+                    <span className="text-[10px] flex-shrink-0"
+                      style={{ color: active ? 'rgba(255,255,255,0.75)' : 'var(--text-muted)' }}>
+                      {c.color}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>,
         document.body
