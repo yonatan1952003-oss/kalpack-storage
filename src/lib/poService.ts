@@ -169,6 +169,7 @@ function rowToContainer(c: ContainerRow | ArrivedContainerRow, items: (Container
     departureDate: c.departure_date ?? '',
     arrivalDate: c.arrival_date ?? '',
     status: c.status,
+    containerType: c.container_type ?? undefined,
     items: items.map(it => ({
       poId: it.purchase_order_id ?? '',
       lineItemId: it.line_item_id ?? '',
@@ -234,9 +235,14 @@ export async function createPO(po: PurchaseOrder): Promise<PurchaseOrder> {
 }
 
 /**
- * Replace a PO and its line items. Strategy: delete-then-insert items so the
- * client can hand a full snapshot without computing a diff. Acceptable while
- * line item counts stay small (typical PO has < 50 items).
+ * Replace a PO and its line items.
+ *
+ * IMPORTANT: we cannot delete-then-insert line items, because
+ * container_line_items.line_item_id has ON DELETE SET NULL — wiping the line
+ * item table breaks the link to existing containers, even when we re-insert
+ * with the same UUID. Strategy:
+ *   1. UPSERT all line items in po.items (keeps existing rows, FK survives)
+ *   2. DELETE only line items that were removed (id no longer in po.items)
  */
 export async function updatePO(po: PurchaseOrder): Promise<PurchaseOrder> {
   const { error: poErr } = await supabase
@@ -252,18 +258,24 @@ export async function updatePO(po: PurchaseOrder): Promise<PurchaseOrder> {
     .eq('id', po.id);
   if (poErr) throw poErr;
 
-  const { error: delErr } = await supabase
+  // Upsert all current line items (insert new, update existing by id)
+  if (po.items.length > 0) {
+    const { error: upErr } = await supabase
+      .from('purchase_order_line_items')
+      .upsert(po.items.map(li => lineItemToInsert(li, po.id)), { onConflict: 'id' });
+    if (upErr) throw upErr;
+  }
+
+  // Delete any line items that no longer belong to this PO
+  const keepIds = po.items.map(li => li.id);
+  const delQuery = supabase
     .from('purchase_order_line_items')
     .delete()
     .eq('purchase_order_id', po.id);
+  const { error: delErr } = keepIds.length > 0
+    ? await delQuery.not('id', 'in', `(${keepIds.map(id => `"${id}"`).join(',')})`)
+    : await delQuery;
   if (delErr) throw delErr;
-
-  if (po.items.length > 0) {
-    const { error: insErr } = await supabase
-      .from('purchase_order_line_items')
-      .insert(po.items.map(li => lineItemToInsert(li, po.id)));
-    if (insErr) throw insErr;
-  }
 
   const fresh = await fetchPOFull(po.id);
   if (!fresh) throw new Error('Updated PO but failed to refetch');
@@ -314,6 +326,7 @@ export async function createContainer(c: Container): Promise<Container> {
       departure_date: c.departureDate || null,
       arrival_date: c.arrivalDate || null,
       status: c.status,
+      container_type: c.containerType ?? null,
     })
     .select()
     .single();
@@ -363,6 +376,7 @@ export async function updateContainer(c: Container): Promise<void> {
       departure_date: c.departureDate || null,
       arrival_date: c.arrivalDate || null,
       status: c.status,
+      container_type: c.containerType ?? null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', c.id);
