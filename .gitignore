@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Local env (Supabase keys live in Vercel env vars for prod)
+.env
+.env.*
+
 # Claude Code per-user settings (contains permission allowlist)
 .claude/settings.local.json
 

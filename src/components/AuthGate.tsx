@@ -11,10 +11,10 @@ export function AuthGate({ children }: Props) {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setChecking(false);
-    });
+    supabase.auth.getSession()
+      .then(({ data }) => { setSession(data.session); })
+      .catch((e) => { console.error('[AuthGate] getSession failed:', e); })
+      .finally(() => { setChecking(false); });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
     });

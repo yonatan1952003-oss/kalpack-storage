@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, ChevronDown, ChevronUp, ArrowLeftRight, Trash2, Filter, X, Download, Upload, Ship as ShipIcon, Edit3, CreditCard, FileSpreadsheet } from 'lucide-react';
+import { Plus, ChevronDown, ChevronUp, ArrowLeftRight, Trash2, Filter, X, Download, Upload, Ship as ShipIcon, Edit3, CreditCard, FileSpreadsheet, Factory, AlertTriangle } from 'lucide-react';
 import { STATUS_LABELS, STATUS_COLORS, STATUS_ORDER } from '../types';
 import type { PurchaseOrder, POLineItem, Status, Filters, CatalogProduct, Container, ContainerItem, ContainerType, Supplier } from '../types';
 import { CONTAINER_VOLUMES } from '../types';
@@ -43,6 +43,64 @@ export function POTab({ pos, setPos, onReceive, catalog, suppliers, setContainer
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [completedPOIds, setCompletedPOIds] = useState<string[]>([]);
   const prevPosRef = useRef<PurchaseOrder[]>(pos);
+  const [dismissedReadyKeys, setDismissedReadyKeys] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('kalpack-dismissed-ready-reminders') || '[]')); }
+    catch { return new Set(); }
+  });
+  const persistDismissed = (next: Set<string>) => {
+    setDismissedReadyKeys(next);
+    try { localStorage.setItem('kalpack-dismissed-ready-reminders', JSON.stringify([...next])); } catch { /* noop */ }
+  };
+
+  // Items whose estimated production window has elapsed but still sit in
+  // `production`. Surface a manual "סמן כמוכן" banner — we never auto-flip.
+  const productionReadyReminders = useMemo(() => {
+    const today = Date.now();
+    const out: { key: string; poId: string; itemId: string; poNumber: string; sku: string; description: string; qty: number; daysOverdue: number }[] = [];
+    for (const po of pos) {
+      const anchor = po.executionDate || po.date;
+      if (!anchor) continue;
+      const anchorMs = new Date(anchor).getTime();
+      if (Number.isNaN(anchorMs)) continue;
+      for (const item of po.items) {
+        if (item.statusBreakdown.production <= 0) continue;
+        const elapsedDays = Math.floor((today - anchorMs) / 86400000);
+        if (elapsedDays < item.estimatedProductionDays) continue;
+        const key = `${po.id}::${item.id}`;
+        if (dismissedReadyKeys.has(key)) continue;
+        out.push({
+          key, poId: po.id, itemId: item.id, poNumber: po.poNumber, sku: item.sku,
+          description: item.description, qty: item.statusBreakdown.production,
+          daysOverdue: elapsedDays - item.estimatedProductionDays,
+        });
+      }
+    }
+    return out.sort((a, b) => b.daysOverdue - a.daysOverdue);
+  }, [pos, dismissedReadyKeys]);
+
+  const markProductionReady = (poId: string, itemId: string) => {
+    const today = new Date().toISOString().slice(0, 10);
+    setPos(prev => prev.map(po => {
+      if (po.id !== poId) return po;
+      return {
+        ...po,
+        items: po.items.map(item => {
+          if (item.id !== itemId) return item;
+          const qty = item.statusBreakdown.production;
+          if (qty <= 0) return item;
+          return {
+            ...item,
+            statusBreakdown: {
+              ...item.statusBreakdown,
+              production: 0,
+              ready: item.statusBreakdown.ready + qty,
+            },
+            statusTransitions: [...item.statusTransitions, { from: 'production', to: 'ready', date: today }],
+          };
+        }),
+      };
+    }));
+  };
 
   // Detect POs that just transitioned to fully-received and surface a banner
   // recommending deletion since the order is complete.
@@ -357,6 +415,51 @@ const allSuppliers = [...new Set([
             })}
           </div>
         </motion.div>
+      )}
+
+      {/* Production-ready reminders — items past estimated production window */}
+      {productionReadyReminders.length > 0 && (
+        <div className="space-y-2">
+          {productionReadyReminders.map(r => {
+            const overdueWarning = r.daysOverdue > 7;
+            return (
+              <motion.div key={r.key}
+                initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+                className="flex items-center gap-3 p-4 rounded-2xl border"
+                style={{
+                  background: overdueWarning ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.08)',
+                  borderColor: overdueWarning ? 'rgba(239, 68, 68, 0.4)' : 'rgba(245, 158, 11, 0.4)',
+                }}>
+                <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ background: overdueWarning ? 'rgba(239, 68, 68, 0.18)' : 'rgba(245, 158, 11, 0.18)' }}>
+                  {overdueWarning
+                    ? <AlertTriangle size={18} style={{ color: '#ef4444' }} />
+                    : <Factory size={18} style={{ color: 'var(--status-warning)' }} />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold" style={{ color: overdueWarning ? '#ef4444' : 'var(--status-warning)' }}>
+                    {overdueWarning
+                      ? `ייצור באיחור: ${r.poNumber} · ${r.sku}`
+                      : `סיום ייצור משוער: ${r.poNumber} · ${r.sku}`}
+                  </p>
+                  <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
+                    {r.description} · {r.qty.toLocaleString()} יח׳ עדיין ב-בייצור · {r.daysOverdue === 0 ? 'הגיע מועד הסיום היום' : `עברו ${r.daysOverdue} ימים מהמועד המשוער`}
+                  </p>
+                </div>
+                <button onClick={() => persistDismissed(new Set([...dismissedReadyKeys, r.key]))}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium"
+                  style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}>
+                  התעלם
+                </button>
+                <button onClick={() => { markProductionReady(r.poId, r.itemId); }}
+                  className="px-4 py-1.5 rounded-lg text-xs font-bold text-white whitespace-nowrap"
+                  style={{ background: 'var(--status-ready)' }}>
+                  סמן כמוכן
+                </button>
+              </motion.div>
+            );
+          })}
+        </div>
       )}
 
       {/* Completion banner — POs that just became 100% received */}

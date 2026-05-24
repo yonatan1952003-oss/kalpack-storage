@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, lazy, Suspense, Component, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, useRef, lazy, Suspense, Component, useCallback, type ReactNode } from 'react';
 import type { TabId, PurchaseOrder, Container, CatalogProduct, SalesRow, AIAlert, Supplier, AuditEntry, Theme, POLineItem } from './types';
 import { MOCK_CATALOG, MOCK_SALES, generateAlerts } from './store';
 import { loadState, saveState } from './utils/persistence';
@@ -377,8 +377,11 @@ export default function App() {
   }, []);
 
   // Generate AI alerts
-  const alerts: AIAlert[] = generateAlerts(salesData, pos, reorderDays);
-  const criticalCount = alerts.filter(a => a.severity === 'red').length + alerts.filter(a => a.severity === 'yellow').length;
+  const alerts: AIAlert[] = useMemo(() => generateAlerts(salesData, pos, reorderDays), [salesData, pos, reorderDays]);
+  const criticalCount = useMemo(() =>
+    alerts.reduce((n, a) => n + (a.severity === 'red' || a.severity === 'yellow' ? 1 : 0), 0),
+    [alerts]
+  );
 
   // Audit log helper
   const addAudit = useCallback((entry: Omit<AuditEntry, 'id' | 'timestamp'>) => {
@@ -417,7 +420,17 @@ export default function App() {
       // Deletions
       for (const [id] of prevById) {
         if (!nextById.has(id)) {
-          deletePO(id).catch(e => console.error('[poSync] deletePO failed:', id, e));
+          const removed = prevById.get(id);
+          deletePO(id).catch(e => {
+            console.error('[poSync] deletePO failed:', id, e);
+            // FK constraint: PO has active containers referencing it.
+            // Roll back the local deletion + alert the user.
+            const code = (e as { code?: string })?.code;
+            if (code === '23503' && removed) {
+              setPos(curr => curr.some(p => p.id === id) ? curr : [removed, ...curr]);
+              alert(`לא ניתן למחוק את ההזמנה ${removed.poNumber} — יש לה מכולות פעילות. מחק קודם את המכולות המקושרות.`);
+            }
+          });
         }
       }
       // Inserts + updates
@@ -535,6 +548,16 @@ export default function App() {
   const handleImportBackup = useCallback((raw: string) => {
     try {
       const data = JSON.parse(raw);
+      // Shape guard — refuse anything that doesn't look like a backup file.
+      // Each top-level slice is optional, but if present must be an array.
+      if (!data || typeof data !== 'object') return;
+      const isArrayOrMissing = (v: unknown) => v === undefined || Array.isArray(v);
+      if (!isArrayOrMissing(data.pos) || !isArrayOrMissing(data.containers) ||
+          !isArrayOrMissing(data.catalog) || !isArrayOrMissing(data.salesData) ||
+          !isArrayOrMissing(data.suppliers)) {
+        console.warn('[handleImportBackup] Rejected: invalid shape');
+        return;
+      }
       if (data.pos) setPos(data.pos);
       if (data.containers) setContainers(data.containers);
       if (data.catalog) setCatalog(data.catalog);

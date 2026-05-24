@@ -32,6 +32,14 @@ export function ArrivedContainersTab({ containers, pos, setContainers }: Props) 
   };
   const totalShipping = containers.reduce((s, c) => s + c.shippingCost, 0);
   const totalUnits = containers.reduce((s, c) => s + c.items.reduce((s2, i) => s2 + i.quantity, 0), 0);
+  const totalUnitValue = containers.reduce((s, c) => s + c.items.reduce((s2, ci) => {
+    const po = pos.find(p => p.id === ci.poId);
+    const item = po?.items.find(i => i.id === ci.lineItemId);
+    const unitPrice = ci.snapshot?.unitPrice ?? item?.unitPrice ?? 0;
+    return s2 + unitPrice * ci.quantity;
+  }, 0), 0);
+  const avgUnitPriceGlobal = totalUnits > 0 ? totalUnitValue / totalUnits : 0;
+  const avgShippingGlobal = totalUnits > 0 ? totalShipping / totalUnits : 0;
 
   const getDisplay = (ci: ContainerItem) => {
     if (ci.snapshot) return ci.snapshot;
@@ -75,11 +83,12 @@ export function ArrivedContainersTab({ containers, pos, setContainers }: Props) 
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard label="מכולות שהגיעו" value={containers.length} />
         <StatCard label="עלות הובלה כוללת" value={`$${totalShipping.toLocaleString()}`} color="var(--accent)" />
         <StatCard label="סה״כ יחידות שנקלטו" value={totalUnits.toLocaleString()} />
-        <StatCard label="עלות ליחידה (ממוצע)" value={totalUnits > 0 ? `$${(totalShipping / totalUnits).toFixed(2)}` : '—'} color="var(--status-ready)" />
+        <StatCard label="עלות הובלה ליחידה (ממוצע)" value={totalUnits > 0 ? `$${avgShippingGlobal.toFixed(2)}` : '—'} color="var(--accent)" />
+        <StatCard label="עלות יחידה ממוצעת" value={totalUnits > 0 ? `$${avgUnitPriceGlobal.toFixed(2)}` : '—'} color="var(--status-received)" />
       </div>
 
       <div className="flex items-center justify-between">
@@ -99,7 +108,7 @@ export function ArrivedContainersTab({ containers, pos, setContainers }: Props) 
       <div className="space-y-4">
         {containers.map((container, idx) => {
           const unitCount = container.items.reduce((s, i) => s + i.quantity, 0);
-          const costPerUnit = unitCount > 0 ? container.shippingCost / unitCount : 0;
+          const shippingPerUnit = unitCount > 0 ? container.shippingCost / unitCount : 0;
 
           return (
             <motion.div
@@ -151,7 +160,7 @@ export function ArrivedContainersTab({ containers, pos, setContainers }: Props) 
                   </div>
                   <div>
                     <p className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>עלות ליחידה</p>
-                    <p className="text-sm font-bold font-mono" style={{ color: 'var(--accent)' }}>${costPerUnit.toFixed(2)}</p>
+                    <p className="text-sm font-bold font-mono" style={{ color: 'var(--accent)' }}>${shippingPerUnit.toFixed(2)}</p>
                   </div>
                 </div>
 
@@ -170,7 +179,7 @@ export function ArrivedContainersTab({ containers, pos, setContainers }: Props) 
                     <tbody>
                       {container.items.map((ci, i) => {
                         const d = getDisplay(ci);
-                        const landedCost = d ? d.unitPrice + costPerUnit : 0;
+                        const landedCost = d ? d.unitPrice + shippingPerUnit : 0;
                         return (
                           <tr key={i} className="border-b" style={{ borderColor: 'var(--border-color)' }}>
                             <td className="py-2 px-2 font-mono text-xs" style={{ color: 'var(--accent)' }}>{d?.poNumber ?? '—'}</td>
