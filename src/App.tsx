@@ -437,9 +437,16 @@ export default function App() {
       for (const [id, np] of nextById) {
         const pp = prevById.get(id);
         if (!pp) {
-          createPO(np).catch(e => console.error('[poSync] createPO failed:', id, e));
+          createPO(np).catch(e => {
+            console.error('[poSync] createPO failed:', id, e);
+            setPos(curr => curr.filter(p => p.id !== id));
+            alert(`שמירת ההזמנה ${np.poNumber} נכשלה: ${(e as { message?: string })?.message ?? e}`);
+          });
         } else if (JSON.stringify(pp) !== JSON.stringify(np)) {
-          updatePOService(np).catch(e => console.error('[poSync] updatePO failed:', id, e));
+          updatePOService(np).catch(e => {
+            console.error('[poSync] updatePO failed:', id, e);
+            alert(`עדכון ההזמנה ${np.poNumber} נכשל: ${(e as { message?: string })?.message ?? e}`);
+          });
         }
       }
       return next;
@@ -458,15 +465,27 @@ export default function App() {
           // Note: the arrival flow drives this through markContainerArrived
           // (in ContainersTab) — that path doesn't call setContainers directly.
           // A removal here is a user-initiated delete.
-          deleteContainer(id).catch(e => console.error('[poSync] deleteContainer failed:', id, e));
+          const removed = prevById.get(id);
+          deleteContainer(id).catch(e => {
+            console.error('[poSync] deleteContainer failed:', id, e);
+            if (removed) setContainers(curr => curr.some(c => c.id === id) ? curr : [removed, ...curr]);
+            alert(`מחיקת המכולה ${removed?.containerNumber ?? ''} נכשלה: ${(e as { message?: string })?.message ?? e}`);
+          });
         }
       }
       for (const [id, nc] of nextById) {
         const pc = prevById.get(id);
         if (!pc) {
-          createContainer(nc).catch(e => console.error('[poSync] createContainer failed:', id, e));
+          createContainer(nc).catch(e => {
+            console.error('[poSync] createContainer failed:', id, e);
+            setContainers(curr => curr.filter(c => c.id !== id));
+            alert(`שמירת המכולה ${nc.containerNumber} נכשלה: ${(e as { message?: string })?.message ?? e}`);
+          });
         } else if (JSON.stringify(pc) !== JSON.stringify(nc)) {
-          updateContainer(nc).catch(e => console.error('[poSync] updateContainer failed:', id, e));
+          updateContainer(nc).catch(e => {
+            console.error('[poSync] updateContainer failed:', id, e);
+            alert(`עדכון המכולה ${nc.containerNumber} נכשל: ${(e as { message?: string })?.message ?? e}`);
+          });
         }
       }
       return next;
